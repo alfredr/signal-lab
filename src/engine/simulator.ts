@@ -18,6 +18,7 @@ import {
   type BlockType,
   type DelayProcessor,
   type Processor,
+  type Reading,
 } from './block.ts';
 import {
   portKey,
@@ -39,6 +40,8 @@ export type SimulationResult = {
   /** Signals by output port, keyed with portKey. */
   readonly signals: ReadonlyMap<string, Signal>;
   readonly status: ReadonlyMap<string, BlockStatus>;
+  /** What each block measured, for blocks that measure anything. */
+  readonly readings: ReadonlyMap<string, readonly Reading[]>;
   /** Blocks computed afresh this run, rather than reused from the last one. */
   readonly recomputed: number;
 };
@@ -63,6 +66,7 @@ type Node = {
 type Outcome = {
   readonly status: BlockStatus;
   readonly outputs: readonly Signal[];
+  readonly readings?: readonly Reading[];
 };
 
 type CacheEntry = Outcome & {
@@ -81,7 +85,7 @@ class BudgetError extends Error {
  * Errors whose message is written for the user; anything else is reported as a
  * crash.
  */
-const EXPLAINED = new Set(['RateError', 'BudgetError']);
+const EXPLAINED = new Set(['RateError', 'BudgetError', 'BlockError']);
 
 export class Simulator {
   readonly #lookup: BlockLookup;
@@ -95,6 +99,7 @@ export class Simulator {
     const { nodes, unknown } = this.#nodes(circuit);
     const signals = new Map<string, Signal>();
     const status = new Map<string, BlockStatus>();
+    const readings = new Map<string, readonly Reading[]>();
     const signatures = new Map<string, number>();
     const cache = new Map<string, CacheEntry>();
     const budget: Budget = { remaining: SAMPLE_BUDGET };
@@ -129,6 +134,11 @@ export class Simulator {
         signatures.set(node.id, signature);
         cache.set(node.id, { ...outcome, signature });
         status.set(node.id, outcome.status);
+
+        if (outcome.readings?.length) {
+          readings.set(node.id, outcome.readings);
+        }
+
         outcome.outputs.forEach((signal, port) =>
           signals.set(portKey({ block: node.id, port }), signal),
         );
@@ -136,7 +146,7 @@ export class Simulator {
     }
 
     this.#cache = cache;
-    return { signals, status, recomputed };
+    return { signals, status, readings, recomputed };
   }
 
   #nodes(circuit: Circuit): { nodes: Node[]; unknown: BlockNode[] } {
@@ -346,6 +356,7 @@ function runBlock(
     );
     return {
       status: { state: 'ok', rates: outputRates },
+      readings: processor.readings?.() ?? [],
       outputs: outputs.map((data, i) => ({ rate: outputRates[i], data })),
     };
   } catch (error) {
@@ -494,6 +505,7 @@ function runLoop(
   return component.map((node, k) => ({
     status: { state: 'ok', rates: node.type.outputs.map(() => loopRate) },
     outputs: outputs[k].map((data) => ({ rate: loopRate, data })),
+    readings: processors[k].readings?.() ?? [],
   }));
 }
 

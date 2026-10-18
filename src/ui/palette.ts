@@ -1,9 +1,9 @@
 import { blockTypes, categories } from '../blocks/index.ts';
 import type { Category } from '../engine/block.ts';
 import { templates } from '../model/library.ts';
+import { markdownToPlain } from '../model/markdown.ts';
 import { html } from './dom.ts';
 import { BLOCK_DRAG_TYPE } from './editor.ts';
-import { plainText } from './math.ts';
 
 /**
  * Prefix that marks a palette key as a library subsystem rather than a block
@@ -54,7 +54,7 @@ export function renderPalette(
                 type: 'button',
                 class: `palette-item${entry.key.startsWith(TEMPLATE) ? ' composite' : ''}`,
                 draggable: 'true',
-                title: plainText(entry.description),
+                title: markdownToPlain(entry.description),
               },
               entry.label,
             );

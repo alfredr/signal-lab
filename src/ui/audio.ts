@@ -82,6 +82,19 @@ export class Player {
     return this.#voice?.key;
   }
 
+  /**
+   * Where playback is in the signal, in seconds, for the playhead to follow;
+   * undefined when nothing plays.
+   */
+  position(): number | undefined {
+    const voice = this.#voice;
+    if (!voice || !this.#context || voice.duration <= 0) {
+      return undefined;
+    }
+
+    return (this.#context.currentTime - voice.startedAt) % voice.duration;
+  }
+
   play(key: string, signal: Signal): void {
     this.#start(key, signal, 0);
     this.#notify();

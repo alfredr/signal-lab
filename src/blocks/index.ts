@@ -1,7 +1,10 @@
 import type { BlockType, Category } from '../engine/block.ts';
 import { capacitor } from './detectors.ts';
 import { bandpass, highpass, lowpass } from './filters.ts';
+import { ft8Decoder, ft8Transmitter } from './ft8.ts';
+import { control, note, plot, readout, speaker } from './instruments.ts';
 import { adder, gain, mixer, offset } from './math.ts';
+import { meter, snrMeter } from './meters.ts';
 import { clipper, diode, rectifier, square } from './nonlinear.ts';
 import { airType, receiveAntenna, transmitAntenna } from './radio.ts';
 import { constant, noise, oscillator, sweep, voice } from './sources.ts';
@@ -27,6 +30,10 @@ export const blockTypes: readonly BlockType[] = [
   highpass,
   bandpass,
   capacitor,
+  meter,
+  snrMeter,
+  ft8Transmitter,
+  ft8Decoder,
   transmitAntenna,
   receiveAntenna,
   delay,
@@ -34,6 +41,11 @@ export const blockTypes: readonly BlockType[] = [
   resample,
   inputTerminal,
   outputTerminal,
+  plot,
+  speaker,
+  control,
+  readout,
+  note,
 ];
 
 export const categories: readonly Category[] = [
@@ -43,8 +55,11 @@ export const categories: readonly Category[] = [
   'Nonlinear',
   'Filters',
   'Detectors',
+  'Meters',
+  'Digital modes',
   'Time and rate',
   'Subsystems',
+  'Instruments',
 ];
 
 const byKind = new Map(blockTypes.map((type) => [type.kind, type]));

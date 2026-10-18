@@ -9,7 +9,7 @@ import { portKey, type PortRef, type Wire } from '../engine/circuit.ts';
 import {
   idSource,
   isSubsystem,
-  moveProbes,
+  moveRefs,
   nextId,
   pathId,
   SUBSYSTEM,
@@ -271,8 +271,8 @@ function ungroup<D extends Diagram>(
 }
 
 /**
- * Groups blocks of the diagram at `path`, keeping probes on the blocks that
- * moved inside.
+ * Groups blocks of the diagram at `path`, keeping their face spots and what
+ * instruments refer to.
  */
 export function groupAt(
   doc: LabDocument,
@@ -302,7 +302,7 @@ export function groupAt(
   const id = made;
   const prefix = path.length ? `${path.join('/')}/` : '';
   return {
-    doc: moveProbes(next, (full) => {
+    doc: moveRefs(doc, next, (full) => {
       const local = full.slice(prefix.length).split('/')[0]!;
       return full.startsWith(prefix) && moved.has(local)
         ? `${prefix}${id}/${full.slice(prefix.length)}`
@@ -313,8 +313,8 @@ export function groupAt(
 }
 
 /**
- * Ungroups a subsystem in the diagram at `path`, keeping probes on the blocks
- * that came out.
+ * Ungroups a subsystem in the diagram at `path`, keeping the face spots and
+ * instrument references of the blocks that came out.
  */
 export function ungroupAt(
   doc: LabDocument,
@@ -337,7 +337,7 @@ export function ungroupAt(
 
   const map = renamed;
   const inside = `${pathId(path, id)}/`;
-  return moveProbes(next, (full) => {
+  return moveRefs(doc, next, (full) => {
     if (full === pathId(path, id)) {
       return undefined;
     }

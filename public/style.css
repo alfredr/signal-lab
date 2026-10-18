@@ -19,16 +19,10 @@
   --accent: #1d6e8a;
   --accent-soft: #e1eef2;
   --warn: #c0392b;
-  --probe-1: #b0306a;
-  --probe-2: #1d6e8a;
-  --probe-3: #2f7d34;
-  --probe-4: #9a6200;
-  --probe-5: #6b4bb3;
-  --probe-6: #a3472b;
   --font-display: "Archivo", "Arial Narrow", system-ui, sans-serif;
   --font-body: "Source Serif 4", Georgia, "Times New Roman", serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --bench-height: 40%;
+  --face-height: 44%;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -47,12 +41,6 @@
     --accent: #5cb8d8;
     --accent-soft: #16303a;
     --warn: #ff6b5b;
-    --probe-1: #f070a8;
-    --probe-2: #5cb8d8;
-    --probe-3: #7cc882;
-    --probe-4: #e3b04c;
-    --probe-5: #a98ff0;
-    --probe-6: #f08a68;
   }
 }
 
@@ -71,12 +59,6 @@
   --accent: #5cb8d8;
   --accent-soft: #16303a;
   --warn: #ff6b5b;
-  --probe-1: #f070a8;
-  --probe-2: #5cb8d8;
-  --probe-3: #7cc882;
-  --probe-4: #e3b04c;
-  --probe-5: #a98ff0;
-  --probe-6: #f08a68;
 }
 
 * { box-sizing: border-box; }
@@ -123,7 +105,7 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .brand-name { font: 800 20px/1 var(--font-display); font-stretch: 112%; letter-spacing: -0.01em; white-space: nowrap; }
 .doc-title { color: var(--muted); font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.toolbar select { width: auto; max-width: 16rem; }
+.toolbar select { width: 10.5rem; }
 .divider { width: 1px; height: 20px; background: var(--rule); margin: 0 4px; }
 .status { margin: 0 0 0 auto; font: 400 12px/1.3 var(--font-mono); color: var(--muted); }
 
@@ -132,14 +114,14 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .workspace {
   display: grid;
   grid-template-columns: 168px minmax(0, 1fr) 300px;
-  grid-template-rows: minmax(0, 1fr) var(--bench-height);
-  grid-template-areas: "palette canvas inspector" "palette bench inspector";
+  grid-template-rows: minmax(0, 1fr) var(--face-height);
+  grid-template-areas: "palette canvas inspector" "palette face inspector";
   min-height: 0;
 }
 .palette { grid-area: palette; overflow: auto; padding: 12px; border-right: 1px solid var(--rule); background: var(--surface); }
 .canvas { grid-area: canvas; position: relative; min-height: 0; background: var(--canvas); }
 .inspector { grid-area: inspector; overflow: auto; padding: 16px; border-left: 1px solid var(--rule); background: var(--surface); }
-.bench { grid-area: bench; overflow: auto; padding: 12px; border-top: 1px solid var(--rule); background: var(--bg); }
+.face { grid-area: face; overflow: auto; padding: 10px 12px 16px; border-top: 1px solid var(--rule); background: var(--bg); }
 
 /* Palette */
 
@@ -173,16 +155,17 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .block.error .body { stroke: var(--warn); stroke-width: 1.8; }
 .block.idle { opacity: 0.55; }
 .block text { fill: var(--ink); text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
+/* text-anchor as an SVG attribute loses to the rule above, so labels that hang off one side use these. */
+.block text.anchor-start { text-anchor: start; }
+.block text.anchor-end { text-anchor: end; }
 .block .title { font: 700 13px var(--font-display); }
 .block .summary { font: 400 11px var(--font-mono); fill: var(--muted); }
 .block .summary.inside { fill: var(--ink); }
 .block .symbol { font: 400 22px var(--font-mono); }
 .block .label { font: 600 11px var(--font-mono); fill: var(--muted); }
 .block .port-name { font: 500 10px var(--font-mono); fill: var(--muted); }
-.block .probe-tag { font: 700 10px var(--font-mono); fill: var(--probe); }
 
 .port { fill: var(--surface); stroke: var(--port); stroke-width: 1.5; }
-.port.out.probed { fill: var(--probe); stroke: var(--probe); }
 .port.target { fill: var(--accent); stroke: var(--accent); }
 .port-hit { fill: transparent; cursor: crosshair; }
 
@@ -191,7 +174,6 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 
 .wire-line { fill: none; stroke: var(--wire); stroke-width: 1.6; }
 .wire-hit { fill: none; stroke: transparent; stroke-width: 12; cursor: pointer; }
-.wire.probed .wire-line { stroke: var(--probe); stroke-width: 2; }
 .wire.selected .wire-line { stroke: var(--accent); stroke-width: 2.6; }
 .wire-line.dragging { stroke: var(--accent); stroke-dasharray: 5 4; }
 /* The wire or marquee being dragged must never sit between the pointer and the port under it. */
@@ -225,6 +207,25 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .crumb { padding: 3px 6px; border: 0; background: none; }
 .crumb.current { padding: 3px 6px; color: var(--ink); font-weight: 600; }
 .crumb-sep { color: var(--muted); }
+
+/* Bindable settings and parameters */
+
+.bindable { position: relative; }
+.bind-button { position: absolute; top: -3px; right: 0; padding: 1px 7px; font: italic 600 13px var(--font-body); border-radius: 5px; }
+.bindable.bound .control-row, .bindable.bound > .control > select { display: none; }
+.bindable.bound > .bind-button { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.expression-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.expression { font: 500 12px var(--font-mono); }
+.expression-sign { color: var(--muted); font: 500 12px var(--font-mono); }
+.expression-result { font: 600 12px var(--font-mono); color: var(--muted); white-space: nowrap; }
+.expression-result.error { color: var(--warn); white-space: normal; grid-column: 1 / -1; }
+.parameters, .settings { display: grid; gap: 10px; }
+.parameter-list { display: grid; gap: 14px; }
+.parameter-form { display: grid; gap: 8px; margin-top: 8px; padding: 10px; border: 1px solid var(--rule); border-radius: 8px; background: var(--bg); }
+.mini-field { display: grid; gap: 4px; font: 500 11px var(--font-mono); color: var(--muted); }
+.mini-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: end; }
+.control-help.error { color: var(--warn); }
+details.inside > summary { cursor: pointer; margin-bottom: 10px; }
 
 /* Context menu */
 
@@ -287,6 +288,10 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .segment input:checked + span { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--rule); }
 .segment input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+.readings { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; margin: 0; font: 500 12px var(--font-mono); }
+.readings:empty { display: none; }
+.readings dt { color: var(--muted); }
+.readings dd { margin: 0; text-align: right; font-weight: 600; overflow-wrap: anywhere; }
 .status-note { margin: 0; font: 400 12px/1.4 var(--font-mono); color: var(--muted); }
 .status-note:empty { display: none; }
 .status-note[data-state="error"] { color: var(--warn); }
@@ -303,7 +308,22 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .inner-block { display: flex; justify-content: space-between; align-items: center; font: 500 12px var(--font-mono); }
 
 math { font-size: 1.05em; }
-.notes math.tml-display, .description math.tml-display { margin: 0.4em 0; }
+
+/* Markdown in notes and descriptions. */
+.description p, .notes p { margin: 0 0 10px; }
+.description p:last-child, .notes > :last-child { margin-bottom: 0; }
+.notes .md-heading { margin: 14px 0 6px; font: 700 15px/1.25 var(--font-display); }
+.notes h5.md-heading { font-size: 13px; color: var(--muted); }
+.notes ul, .notes ol { margin: 0 0 10px; padding-left: 20px; }
+.notes li + li { margin-top: 4px; }
+.notes blockquote { margin: 0 0 10px; padding-left: 10px; border-left: 3px solid var(--rule); color: var(--muted); }
+.notes hr { border: 0; border-top: 1px solid var(--rule); margin: 12px 0; }
+.notes code, .description code { font: 400 0.85em var(--font-mono); padding: 1px 4px; border-radius: 4px; background: var(--bg); }
+.notes pre { margin: 0 0 10px; padding: 8px 10px; overflow-x: auto; border-radius: 6px; background: var(--bg); }
+.notes pre code { padding: 0; background: none; }
+.notes a, .description a { color: var(--accent); }
+.md-math { margin: 0 0 10px; overflow-x: auto; }
+.notes math.tml-display, .description math.tml-display { margin: 0.2em 0; }
 
 .notes-block { display: grid; gap: 8px; }
 .notes-head { display: flex; justify-content: space-between; align-items: center; }
@@ -313,10 +333,6 @@ math { font-size: 1.05em; }
 .help ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 14px; }
 .help li + li { margin-top: 4px; }
 
-/* Bench */
-
-.bench-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 12px; }
-.bench-hint { margin: 8px 4px; color: var(--muted); }
 .signal-panel { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 10px 10px 6px; min-width: 0; }
 .signal-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
 .swatch { flex: none; width: 10px; height: 10px; border-radius: 50%; }
@@ -332,6 +348,93 @@ math { font-size: 1.05em; }
 .plot { display: block; width: 100%; height: 170px; touch-action: none; cursor: grab; }
 .panel-empty { margin: 0; padding: 40px 12px; text-align: center; color: var(--muted); font: 400 12px var(--font-mono); }
 
+/* Instruments on the diagram: a frame holding the same widget the face shows. */
+
+.instrument .body { fill: var(--surface); stroke: var(--rule); stroke-width: 1.2; }
+.instrument.selected .body { stroke: var(--accent); stroke-width: 2.2; }
+.instrument-face { overflow: visible; }
+.instrument-face > * { width: 100%; height: 100%; padding: 6px 8px; overflow: hidden; color: var(--ink); font: 400 12px/1.35 var(--font-body); }
+.lead { stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 2 5; stroke-linecap: round; opacity: 0.55; }
+.lead.selected { opacity: 1; stroke-width: 1.8; }
+.wire.to-instrument .wire-line { stroke-dasharray: 6 3; }
+
+/* Widgets, on the diagram and the face. */
+
+.widget-title { font: 600 11px/1.2 var(--font-mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.widget-plot { display: flex; flex-direction: column; gap: 2px; }
+.widget-plot .plot-wrap, .face-body .plot-wrap { position: relative; flex: 1; min-height: 40px; }
+.widget-plot .plot, .face-body .plot { position: absolute; inset: 0; width: 100%; height: 100%; }
+.widget-plot .panel-empty { padding: 12px 4px; font-size: 11px; }
+.widget-plot .plot { cursor: inherit; }
+
+.widget-value { font: 600 24px/1.15 var(--font-mono); overflow-wrap: anywhere; }
+.widget-value.error { color: var(--warn); }
+.widget-from { font: 400 11px/1.3 var(--font-mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.widget-readout, .widget-control { display: grid; align-content: center; gap: 3px; min-width: 0; }
+.instrument-face .widget-value { font-size: 16px; }
+.widget-note { overflow: auto; font-size: 14px; }
+.instrument-face .widget-note { font-size: 12px; }
+.widget-note p { margin: 0 0 6px; }
+
+.knob-control { display: grid; justify-items: center; align-content: center; gap: 4px; height: 100%; }
+.knob-control .control-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.knob { width: 64px; height: 64px; border-radius: 50%; cursor: ns-resize; touch-action: none; }
+.knob-dial { display: block; width: 100%; height: 100%; }
+.knob-track, .knob-fill { fill: none; stroke-width: 7; stroke-linecap: round; }
+.knob-track { stroke: var(--rule); }
+.knob-fill { stroke: var(--accent); }
+.knob-cap { fill: var(--surface); stroke: var(--port); stroke-width: 1.5; }
+.knob-pointer { stroke: var(--ink); stroke-width: 5; stroke-linecap: round; }
+input.knob-value { width: 100%; max-width: 116px; padding: 3px 6px; text-align: center; }
+.instrument-face .knob-control { grid-template-columns: 44px minmax(0, 1fr); justify-items: start; column-gap: 8px; row-gap: 2px; }
+.instrument-face .knob { grid-row: 1 / span 2; width: 44px; height: 44px; }
+.instrument-face .knob-control .control-label { grid-column: 2; }
+.instrument-face input.knob-value { grid-column: 2; max-width: none; text-align: left; }
+
+.widget-speaker { display: grid; justify-items: center; align-content: center; gap: 6px; }
+.speaker-grille { width: 56px; height: 56px; border: 2px solid var(--rule); border-radius: 50%; background: radial-gradient(circle, var(--muted) 1.2px, transparent 1.7px) 0 0 / 7px 7px, var(--bg); }
+.widget-speaker.playing .speaker-grille { border-color: var(--accent); animation: thump 0.5s ease-in-out infinite alternate; }
+@keyframes thump { to { transform: scale(1.06); } }
+.instrument-face .widget-speaker { padding: 4px; gap: 3px; }
+.instrument-face .speaker-grille { width: 30px; height: 30px; background-size: 5px 5px, auto; }
+.instrument-face .widget-speaker .play { padding: 1px 5px; font-size: 9px; }
+@media (prefers-reduced-motion: reduce) {
+  .widget-speaker.playing .speaker-grille { animation: none; }
+}
+
+/* The panel face, with the playhead's transport. */
+
+.face-head { position: sticky; top: -10px; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: -10px -12px 10px; padding: 8px 12px; background: var(--bg); border-bottom: 1px solid var(--rule); }
+.face-title { margin: 0; font: 800 16px/1 var(--font-display); font-stretch: 112%; }
+.transport { display: flex; flex: 1; align-items: center; gap: 6px; min-width: 260px; }
+.transport input[type="range"] { flex: 1; min-width: 80px; max-width: 420px; }
+.transport-time { min-width: 5.5em; font: 600 12px var(--font-mono); }
+.transport select { width: auto; padding: 3px 6px; }
+.run { min-width: 7.5em; }
+.face-grid { position: relative; display: grid; grid-template-columns: repeat(auto-fill, 32px); grid-auto-columns: 32px; grid-auto-rows: 32px; gap: 8px; }
+.face-grid.arranging { background-image: radial-gradient(var(--grid-dot) 1.5px, transparent 1.5px); background-size: 40px 40px; background-position: 16px 16px; }
+.face-item { position: relative; display: flex; min-width: 0; min-height: 0; }
+.face-body { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; padding: 8px 10px; overflow: hidden; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; }
+.face-body > * { flex: 1; min-height: 0; }
+.face-item.selected .face-body { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.face-item.scope .face-body { border-style: dashed; }
+.face-body .signal-panel { display: flex; flex-direction: column; padding: 0; background: none; border: 0; }
+.face-body .signal-head { flex-wrap: wrap; row-gap: 4px; }
+.face-body .signal-name { flex: 1 1 100%; }
+.face-body .swatch { display: none; }
+.face-body .knob { width: 50px; height: 50px; }
+.face-body .widget-readout { gap: 1px; }
+.face-body .widget-value { font-size: 20px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.instrument-face .segment span { padding: 3px 5px; font-size: 11px; }
+.face-body .knob-control { gap: 2px; }
+.face-body input.knob-value { padding: 2px 4px; }
+.face-grip, .face-resize { display: none; }
+.face-grid.arranging .face-grip { position: absolute; inset: 0; display: block; cursor: move; border-radius: 10px; outline: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.face-grid.arranging .face-resize { position: absolute; right: -5px; bottom: -5px; display: block; width: 14px; height: 14px; border-radius: 4px; background: var(--accent); cursor: nwse-resize; }
+.face-empty { grid-column: 1 / -1; max-width: 34rem; margin: 24px auto; text-align: center; color: var(--muted); }
+.face-empty p { margin: 0 0 8px; }
+.reading-add .icon { padding: 0 6px; font-size: 13px; }
+
 .noscript { padding: 24px; }
 
 /* Narrow screens: stack everything and let the page scroll. */
@@ -343,11 +446,11 @@ math { font-size: 1.05em; }
   .workspace {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: 62vh auto auto auto;
-    grid-template-areas: "canvas" "palette" "inspector" "bench";
+    grid-template-areas: "canvas" "face" "palette" "inspector";
   }
   .palette { border-right: 0; border-top: 1px solid var(--rule); display: flex; flex-wrap: wrap; gap: 4px 14px; }
   .palette-group + .palette-group { margin-top: 0; }
   .palette-item { display: inline-block; width: auto; margin-right: 4px; }
   .inspector { border-left: 0; border-top: 1px solid var(--rule); }
-  .bench-list { grid-template-columns: minmax(0, 1fr); }
+  .face { overflow: visible; }
 }

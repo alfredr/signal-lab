@@ -7,9 +7,50 @@ export type Category =
   | 'Nonlinear'
   | 'Filters'
   | 'Detectors'
+  | 'Meters'
+  | 'Digital modes'
   | 'Radio'
   | 'Time and rate'
-  | 'Subsystems';
+  | 'Subsystems'
+  | 'Instruments';
+
+/**
+ * A value a block measures over a run: a power, an SNR, a decoded message.
+ * Readings show on the block, in the inspector and on readouts.
+ */
+export type Reading = {
+  readonly label: string;
+  /** The value over the whole run; for a track, a summary of it. */
+  readonly value: number | string;
+  /** How to show a number. */
+  readonly unit?: 'dB' | 'Hz' | 's' | 'x';
+  /** How the value changes through the run, step by step. */
+  readonly track?: Track;
+};
+
+/**
+ * A reading that changes over the run, such as the symbol an FT8 transmitter
+ * is sending: `values[k]` holds from `start + k * step` until the next step.
+ */
+type Track = {
+  readonly start: number;
+  readonly step: number;
+  readonly values: readonly (number | string)[];
+};
+
+/** A reading's value at time `t`, or over the whole run if `t` is undefined. */
+export function readingAt(
+  reading: Reading,
+  t: number | undefined,
+): number | string | undefined {
+  const { track } = reading;
+  if (!track || t === undefined) {
+    return reading.value;
+  }
+
+  const k = Math.floor((t - track.start) / track.step);
+  return k >= 0 && k < track.values.length ? track.values[k] : undefined;
+}
 
 export type PortSpec = {
   readonly name: string;
@@ -28,7 +69,13 @@ type Shape =
   | { readonly kind: 'circle'; readonly symbol: string }
   | { readonly kind: 'triangle' }
   | { readonly kind: 'antenna' }
-  | { readonly kind: 'terminal' };
+  | { readonly kind: 'terminal' }
+  /** Drawn by the instrument itself, at a fixed size. */
+  | {
+      readonly kind: 'instrument';
+      readonly width: number;
+      readonly height: number;
+    };
 
 /**
  * A running instance of a block. It is causal and keeps its own state. Every
@@ -50,6 +97,8 @@ export type Processor = {
     start: number,
     end: number,
   ): void;
+  /** What the block measured, asked for once the whole window is done. */
+  readings?(): readonly Reading[];
 };
 
 /**
@@ -125,6 +174,14 @@ export function defineBlock<const S extends ParamSpecs>(
   type: BlockType<S>,
 ): BlockType<S> {
   return type;
+}
+
+/**
+ * Thrown by a block that can't run as set up, such as an FT8 message that
+ * can't be encoded. Its message is shown as is.
+ */
+export class BlockError extends Error {
+  override readonly name = 'BlockError';
 }
 
 /**

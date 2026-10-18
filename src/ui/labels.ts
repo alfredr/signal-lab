@@ -15,11 +15,6 @@ export function portLabel(
   ref: PortRef,
   direction: 'in' | 'out' = 'out',
 ): string {
-  const parts = ref.block.split('/');
-  const names = parts.map((_, i) => {
-    const block = blockAt(doc, parts.slice(0, i + 1).join('/'));
-    return block ? displayName(block) : '?';
-  });
   const block = blockAt(doc, ref.block);
   const type = block && typeOf(block);
   const ports = (direction === 'out' ? type?.outputs : type?.inputs) ?? [];
@@ -27,15 +22,18 @@ export function portLabel(
     visiblePorts(ports).length > 1
       ? ` ${ports[ref.port]?.name ?? ref.port}`
       : '';
-  return `${names.join(' › ')}${port}`;
+  return `${blockLabel(doc, ref.block)}${port}`;
 }
 
-/**
- * The CSS color for probe number `n` (1-based); the palette has six and
- * repeats.
- */
-export function probeColor(n: number): string {
-  return `var(--probe-${((n - 1) % 6) + 1})`;
+/** The names of the blocks along a full id: "Station A › Modulator". */
+export function blockLabel(doc: LabDocument, fullId: string): string {
+  const parts = fullId.split('/');
+  return parts
+    .map((_, i) => {
+      const block = blockAt(doc, parts.slice(0, i + 1).join('/'));
+      return block ? displayName(block) : '?';
+    })
+    .join(' › ');
 }
 
 /** An output's sample rate for display, if it has a signal. */

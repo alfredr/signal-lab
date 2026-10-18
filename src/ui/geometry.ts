@@ -52,7 +52,7 @@ export function layoutOf(type: BlockType): BlockLayout {
 }
 
 function layoutBlock(type: BlockType): BlockLayout {
-  const shape = type.shape?.kind ?? 'box';
+  const shape = type.shape ?? { kind: 'box' };
   const sideOf = (port: PortSpec) => port.side ?? 'left';
   const visibleInputs = type.inputs.filter((port) => !port.hidden);
   const visibleOutputs = type.outputs.filter((port) => !port.hidden);
@@ -61,7 +61,7 @@ function layoutBlock(type: BlockType): BlockLayout {
   let width: number;
   let height: number;
   let portY: number | undefined;
-  switch (shape) {
+  switch (shape.kind) {
     case 'circle':
       [width, height] = [48, 48];
       break;
@@ -74,6 +74,9 @@ function layoutBlock(type: BlockType): BlockLayout {
       break;
     case 'terminal':
       [width, height] = [80, 32];
+      break;
+    case 'instrument':
+      [width, height] = [shape.width, shape.height];
       break;
     default:
       width = 144;

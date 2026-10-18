@@ -1,3 +1,5 @@
+import type { Reading } from './block.ts';
+
 // Number formatting for labels and readouts, with SI prefixes and the typographic minus sign.
 
 export const MINUS = '−';
@@ -44,6 +46,26 @@ export function decibels(value: number, digits = 3): string {
   }
 
   return `${significant(value, digits)} dB`;
+}
+
+/** A reading for display: "-3.01 dB", "12.5 kHz", "CQ K1ABC FN42". */
+export function formatReading(reading: Reading): string {
+  const { value, unit } = reading;
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  switch (unit) {
+    case 'dB':
+      return decibels(value);
+    case 'Hz':
+    case 's':
+      return si(value, unit, 4);
+    case 'x':
+      return `\u00d7${significant(value, 4)}`;
+    default:
+      return significant(value, 4);
+  }
 }
 
 /** The amplitude ratio for a gain in dB. */

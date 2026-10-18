@@ -1,11 +1,14 @@
 // The block-diagram editor: an SVG canvas that draws one diagram (the document's top level or
 // the inside of a subsystem) and turns pointer gestures into edits. It never changes anything
 // itself; it reports new versions of the diagram through `change`, as previews while a gesture
-// is under way and as a commit when it ends.
+// is under way and as a commit when it ends. Instruments draw their own live widgets, which
+// stay in place across redraws so a knob keeps turning while the diagram changes under it.
 
-import type { BlockType } from '../engine/block.ts';
-import { visiblePorts } from '../engine/block.ts';
-import { portKey, type PortRef } from '../engine/circuit.ts';
+import { isInstrument } from '../blocks/instruments.ts';
+import type { BlockType, Reading } from '../engine/block.ts';
+import { readingAt, visiblePorts } from '../engine/block.ts';
+import type { PortRef } from '../engine/circuit.ts';
+import { formatReading } from '../engine/format.ts';
 import { resolveParams } from '../engine/params.ts';
 import type { BlockStatus } from '../engine/simulator.ts';
 import {
@@ -19,8 +22,10 @@ import {
   wireInto,
   type Diagram,
   type LabBlock,
+  type LabDocument,
   type Path,
 } from '../model/document.ts';
+import { instrumentLeads } from '../model/instruments.ts';
 import { typeOf } from '../model/subsystems.ts';
 import { svg } from './dom.ts';
 import {
@@ -32,7 +37,8 @@ import {
   type Point,
   type PortPlace,
 } from './geometry.ts';
-import { probeColor, rateLabel } from './labels.ts';
+import { rateLabel } from './labels.ts';
+import type { Widgets } from './widgets.ts';
 
 export type Selection =
   | { readonly kind: 'none' }
@@ -50,16 +56,20 @@ export function selectedBlocks(selection: Selection): readonly string[] {
 }
 
 export type EditorModel = {
+  readonly doc: LabDocument;
   readonly diagram: Diagram;
-  /**
-   * Where the diagram sits in the document; statuses and probes are keyed by
-   * full id.
-   */
+  /** Where the diagram sits in the document; statuses are keyed by full id. */
   readonly path: Path;
   readonly selection: Selection;
   readonly status: ReadonlyMap<string, BlockStatus>;
-  /** Probe number (1-based) by full output port key. */
-  readonly probes: ReadonlyMap<string, number>;
+  /** Draws the instruments. */
+  readonly widgets: Widgets;
+  /** The playhead's time, if it is out. */
+  readonly time: number | undefined;
+  /** What measuring blocks found, by full id. */
+  readonly readings: ReadonlyMap<string, readonly Reading[]>;
+  /** Settings worked out from bindings, by full block id. */
+  readonly bound: ReadonlyMap<string, Readonly<Record<string, number>>>;
 };
 
 /** What a right-click landed on. Port refs are local to the diagram on screen. */
@@ -86,6 +96,9 @@ export type EditorEvents = {
    */
   menu(target: MenuTarget, client: Point, at: Point): void;
 };
+
+/** Two presses on a block closer together than this are a double-click. */
+const DOUBLE_CLICK_MS = 450;
 
 /** Data type the palette puts on drag-and-drop transfers. */
 export const BLOCK_DRAG_TYPE = 'application/x-signal-lab-block';
@@ -159,27 +172,74 @@ function place(
 
 const classes = (...names: (string | false | undefined)[]) =>
   names.filter(Boolean).join(' ');
-const probeStyle = (probe: number | undefined) =>
-  probe === undefined ? undefined : `--probe: ${probeColor(probe)}`;
+
+/**
+ * The values of a block's changing readings at time `t`, joined: what the
+ * block is doing at the playhead.
+ */
+function trackSummary(
+  readings: readonly Reading[],
+  t: number | undefined,
+): string | undefined {
+  const tracks = readings.filter((reading) => reading.track);
+  if (t === undefined || !tracks.length) {
+    return undefined;
+  }
+
+  return tracks
+    .map((reading) => {
+      const value = readingAt(reading, t);
+      return value === undefined ? '–' : formatReading({ ...reading, value });
+    })
+    .join(' · ');
+}
+
+/** An instrument's place on the diagram, kept between redraws. */
+type InstrumentNode = {
+  readonly group: SVGGElement;
+  readonly body: SVGRectElement;
+  readonly face: SVGForeignObjectElement;
+  readonly ports: SVGGElement;
+};
 
 export class DiagramEditor {
   readonly element: SVGSVGElement;
   readonly #events: EditorEvents;
   readonly #grid: SVGRectElement;
+  readonly #leads: SVGGElement;
   readonly #wires: SVGGElement;
   readonly #blocks: SVGGElement;
+  readonly #instruments: SVGGElement;
   readonly #overlay: SVGGElement;
+  /** Instrument nodes by full id. */
+  readonly #nodes = new Map<string, InstrumentNode>();
+  /** Summaries that follow the playhead, by full block id. */
+  readonly #tracked = new Map<
+    string,
+    { readonly text: SVGTextElement; readonly readings: readonly Reading[] }
+  >();
   #model: EditorModel | undefined;
   #view: View = { x: -40, y: -40, scale: 1 };
   #drag: Drag | undefined;
   /** Pointers currently down, in client coordinates; two of them make a pinch. */
   readonly #pointers = new Map<number, Point>();
+  /**
+   * The last press on a block. Double-clicks are spotted from two presses
+   * rather than the browser's dblclick event, which never fires here: the
+   * first press selects the block, and redrawing replaces the element under
+   * the pointer before the second.
+   */
+  #lastPress:
+    | { readonly id: string; readonly time: number; readonly at: Point }
+    | undefined;
 
   constructor(host: HTMLElement, events: EditorEvents) {
     this.#events = events;
     this.#grid = svg('rect', { class: 'grid', fill: 'url(#grid-dots)' });
+    this.#leads = svg('g', { class: 'leads' });
     this.#wires = svg('g', { class: 'wires' });
     this.#blocks = svg('g', { class: 'blocks' });
+    this.#instruments = svg('g', { class: 'instruments' });
     this.#overlay = svg('g', { class: 'overlay' });
     this.element = svg(
       'svg',
@@ -217,8 +277,10 @@ export class DiagramEditor {
         ),
       ),
       this.#grid,
+      this.#leads,
       this.#wires,
       this.#blocks,
+      this.#instruments,
       this.#overlay,
     );
     host.append(this.element);
@@ -235,16 +297,6 @@ export class DiagramEditor {
     this.element.addEventListener('pointercancel', (event) => {
       this.#pointers.delete(event.pointerId);
       this.#cancelDrag();
-    });
-    this.element.addEventListener('dblclick', (event) => {
-      const id = (event.target as Element).closest<SVGElement>('[data-block]')
-        ?.dataset.block;
-      const block = id
-        ? this.#model?.diagram.blocks.find((b) => b.id === id)
-        : undefined;
-      if (block && isSubsystem(block)) {
-        this.#events.open(block.id);
-      }
     });
     this.element.addEventListener('contextmenu', (event) =>
       this.#contextMenu(event),
@@ -284,12 +336,10 @@ export class DiagramEditor {
         }
 
         const d = roundedPath(route(start, end));
-        const source = {
-          block: pathId(path, wire.from.block),
-          port: wire.from.port,
-        };
-        const probe = model.probes.get(portKey(source));
-        const rate = rateLabel(model.status.get(source.block), wire.from.port);
+        const rate = rateLabel(
+          model.status.get(pathId(path, wire.from.block)),
+          wire.from.port,
+        );
         const selected = selection.kind === 'wire' && selection.id === wire.id;
         return [
           svg(
@@ -298,10 +348,9 @@ export class DiagramEditor {
               class: classes(
                 'wire',
                 selected && 'selected',
-                probe !== undefined && 'probed',
+                isInstrument(to.kind) && 'to-instrument',
               ),
               'data-wire': wire.id,
-              style: probeStyle(probe),
             },
             svg('path', { class: 'wire-hit', d }),
             svg('path', {
@@ -320,12 +369,156 @@ export class DiagramEditor {
     const { inputs, outputs } = terminals(diagram);
     inputs.forEach((t, i) => terminalNumbers.set(t.id, `in ${i + 1}`));
     outputs.forEach((t, i) => terminalNumbers.set(t.id, `out ${i + 1}`));
+    this.#tracked.clear();
     this.#blocks.replaceChildren(
-      ...diagram.blocks.map((block) =>
-        this.#drawBlock(block, model, terminalNumbers.get(block.id)),
-      ),
+      ...diagram.blocks
+        .filter((block) => !isInstrument(block.kind))
+        .map((block) =>
+          this.#drawBlock(block, model, terminalNumbers.get(block.id)),
+        ),
     );
+    this.#drawInstruments(model);
     this.#drawOverlay();
+  }
+
+  /** Moves the playhead: block summaries that follow it catch up. */
+  setTime(time: number | undefined): void {
+    for (const { text, readings } of this.#tracked.values()) {
+      const summary = trackSummary(readings, time);
+      if (summary !== undefined) {
+        text.textContent = summary;
+      }
+    }
+  }
+
+  /**
+   * Instruments, each a frame holding its widget, plus dashed leads to what
+   * they set or read. The nodes persist, so a widget being used stays put.
+   */
+  #drawInstruments(model: EditorModel): void {
+    const { diagram, path, selection } = model;
+    const selected = selectedBlocks(selection);
+    const blocks = new Map(diagram.blocks.map((block) => [block.id, block]));
+    const center = (block: LabBlock) => {
+      const { width, height } = layoutFor(block);
+      return { x: block.x + width / 2, y: block.y + height / 2 };
+    };
+
+    const live = new Set<string>();
+    const leads: SVGElement[] = [];
+    for (const block of diagram.blocks) {
+      if (!isInstrument(block.kind)) {
+        continue;
+      }
+
+      const id = pathId(path, block.id);
+      live.add(id);
+      const node = this.#node(id);
+      const layout = layoutFor(block);
+      node.group.dataset.block = block.id;
+      node.group.setAttribute('transform', `translate(${block.x},${block.y})`);
+      node.group.setAttribute(
+        'class',
+        classes(
+          'block',
+          'instrument',
+          `instrument-${block.kind}`,
+          selected.includes(block.id) && 'selected',
+        ),
+      );
+
+      for (const element of [node.body, node.face]) {
+        element.setAttribute('width', String(layout.width));
+        element.setAttribute('height', String(layout.height));
+      }
+
+      const widget = model.widgets.get('diagram', { id, path, block });
+      if (node.face.firstChild !== widget) {
+        node.face.replaceChildren(widget);
+      }
+
+      node.ports.replaceChildren(...this.#inputPorts(block, layout));
+
+      const from = center(block);
+      for (const target of instrumentLeads(diagram, block)) {
+        const other = blocks.get(target);
+        if (other) {
+          const to = center(other);
+          leads.push(
+            svg('line', {
+              class: classes(
+                'lead',
+                (selected.includes(block.id) || selected.includes(target)) &&
+                  'selected',
+              ),
+              x1: from.x,
+              y1: from.y,
+              x2: to.x,
+              y2: to.y,
+            }),
+          );
+        }
+      }
+    }
+
+    for (const [id, node] of this.#nodes) {
+      if (!live.has(id)) {
+        node.group.remove();
+        this.#nodes.delete(id);
+      }
+    }
+
+    this.#leads.replaceChildren(...leads);
+  }
+
+  #node(id: string): InstrumentNode {
+    let node = this.#nodes.get(id);
+    if (!node) {
+      const body = svg('rect', { class: 'body', rx: 8 });
+      const face = svg('foreignObject', { class: 'instrument-face' });
+      const ports = svg('g', { class: 'ports' });
+      const group = svg('g', {}, body, face, ports);
+      node = { group, body, face, ports };
+      this.#nodes.set(id, node);
+      this.#instruments.append(group);
+    }
+
+    return node;
+  }
+
+  /** Input ports drawn on a block, with their hit areas and names. */
+  #inputPorts(block: LabBlock, layout: BlockLayout): SVGElement[] {
+    const type = typeOf(block);
+    return (type?.inputs ?? []).flatMap((port, i) => {
+      const p = layout.inputs[i];
+      if (!p) {
+        return [];
+      }
+
+      const target =
+        this.#drag?.kind === 'wire' &&
+        this.#drag.target &&
+        sameRef(this.#drag.target, { block: block.id, port: i });
+      return [
+        svg('circle', {
+          class: classes('port', 'in', target && 'target'),
+          cx: p.x,
+          cy: p.y,
+          r: 4.5,
+        }),
+        svg(
+          'circle',
+          {
+            class: 'port-hit',
+            cx: p.x,
+            cy: p.y,
+            r: 11,
+            'data-port': `in:${i}`,
+          },
+          svg('title', {}, `input ${port.name}`),
+        ),
+      ];
+    });
   }
 
   /** Zooms and pans so the whole diagram fits. */
@@ -410,9 +603,23 @@ export class DiagramEditor {
     const { width: w, height: h } = layout;
     const shape = type.shape ?? { kind: 'box' };
     const subsystem = isSubsystem(block);
+    // A measuring block shows its first reading where others show settings,
+    // and what its changing readings say at the playhead while it is out.
+    const readings = model.readings.get(id) ?? [];
+    const reading = readings.find((r) => !r.track);
+    const tracked = trackSummary(readings, model.time);
     const summary = subsystem
       ? `${block.inner.blocks.length} blocks inside`
-      : (type.summary?.(resolveParams(type.params, block.params)) ?? '');
+      : tracked !== undefined
+        ? tracked
+        : reading
+          ? `${typeof reading.value === 'string' ? '' : `${reading.label} `}${formatReading(reading)}`
+          : (type.summary?.(
+              resolveParams(type.params, {
+                ...block.params,
+                ...model.bound.get(id),
+              }),
+            ) ?? '');
     const group = svg('g', {
       class: classes(
         'block',
@@ -444,7 +651,7 @@ export class DiagramEditor {
             topInput
               ? svg(
                   'text',
-                  { class: 'label', x: w + 2, y: -2, 'text-anchor': 'start' },
+                  { class: 'label anchor-start', x: w + 2, y: -2 },
                   block.name,
                 )
               : svg('text', { class: 'label', x: w / 2, y: -10 }, block.name),
@@ -595,10 +802,9 @@ export class DiagramEditor {
           svg(
             'text',
             {
-              class: 'port-name',
+              class: 'port-name anchor-start',
               x: p.x + 12,
               y: p.y + 1,
-              'text-anchor': 'start',
             },
             port.name,
           ),
@@ -611,14 +817,12 @@ export class DiagramEditor {
         return;
       }
 
-      const probe = model.probes.get(portKey({ block: id, port: i }));
       group.append(
         svg('circle', {
-          class: classes('port', 'out', probe !== undefined && 'probed'),
+          class: classes('port', 'out'),
           cx: p.x,
           cy: p.y,
           r: 4.5,
-          style: probeStyle(probe),
         }),
         svg(
           'circle',
@@ -638,27 +842,11 @@ export class DiagramEditor {
           svg(
             'text',
             {
-              class: 'port-name',
+              class: 'port-name anchor-end',
               x: p.x - 12,
               y: p.y + 1,
-              'text-anchor': 'end',
             },
             port.name,
-          ),
-        );
-      }
-
-      if (probe !== undefined) {
-        group.append(
-          svg(
-            'text',
-            {
-              class: 'probe-tag',
-              x: p.x + 8,
-              y: p.y - 9,
-              style: probeStyle(probe),
-            },
-            String(probe),
           ),
         );
       }
@@ -676,6 +864,11 @@ export class DiagramEditor {
       );
     } else if (status?.state === 'idle') {
       group.append(svg('title', {}, status.reason));
+    }
+
+    const text = group.querySelector<SVGTextElement>('text.summary');
+    if (text && readings.some((r) => r.track)) {
+      this.#tracked.set(id, { text, readings });
     }
 
     return group;
@@ -784,8 +977,13 @@ export class DiagramEditor {
       return;
     }
 
-    this.element.focus({ preventScroll: true });
     const target = event.target as Element;
+    if (target.closest('input, select, textarea, button, [data-live]')) {
+      this.#pointers.delete(event.pointerId);
+      return;
+    }
+
+    this.element.focus({ preventScroll: true });
     const port = target.closest<SVGElement>('[data-port]');
     const blockId = target.closest<SVGElement>('[data-block]')?.dataset.block;
     const wireId = target.closest<SVGElement>('[data-wire]')?.dataset.wire;
@@ -823,6 +1021,24 @@ export class DiagramEditor {
         this.#events.change(base, 'preview');
       }
     } else if (blockId) {
+      const press = {
+        id: blockId,
+        time: event.timeStamp,
+        at: { x: event.clientX, y: event.clientY },
+      };
+      const last = this.#lastPress;
+      this.#lastPress = press;
+      const twice =
+        last?.id === blockId &&
+        press.time - last.time < DOUBLE_CLICK_MS &&
+        Math.hypot(press.at.x - last.at.x, press.at.y - last.at.y) < 6;
+      const block = model.diagram.blocks.find((b) => b.id === blockId);
+      if (twice && !event.shiftKey && block && isSubsystem(block)) {
+        this.#lastPress = undefined;
+        this.#events.open(blockId);
+        return;
+      }
+
       let ids: readonly string[];
       if (event.shiftKey) {
         ids = selected.includes(blockId)

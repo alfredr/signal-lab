@@ -5,7 +5,7 @@ export type ParamValue = number | string | boolean;
 export type StoredParams = { readonly [name: string]: ParamValue };
 
 /** Units the inspector knows how to format. */
-type Unit = 'Hz' | 's' | 'dB' | 'deg' | 'V' | 'x';
+export type Unit = 'Hz' | 's' | 'dB' | 'deg' | 'V' | 'x';
 
 type ParamBase = {
   readonly label: string;
@@ -46,7 +46,15 @@ type BooleanParam = ParamBase & {
   readonly default: boolean;
 };
 
-export type ParamSpec = NumberParam | ChoiceParam | BooleanParam;
+export type TextParam = ParamBase & {
+  readonly type: 'text';
+  readonly default: string;
+  readonly maxLength?: number;
+  /** Several lines, such as Markdown, rather than one. */
+  readonly multiline?: boolean;
+};
+
+export type ParamSpec = NumberParam | ChoiceParam | BooleanParam | TextParam;
 export type ParamSpecs = { readonly [name: string]: ParamSpec };
 
 type ParamValueOf<S> = S extends NumberParam
@@ -55,7 +63,9 @@ type ParamValueOf<S> = S extends NumberParam
     ? T
     : S extends BooleanParam
       ? boolean
-      : never;
+      : S extends TextParam
+        ? string
+        : never;
 
 export type ParamValues<S extends ParamSpecs> = {
   readonly [K in keyof S]: ParamValueOf<S[K]>;
@@ -100,7 +110,19 @@ export function coerceParam(
         : spec.default;
     case 'boolean':
       return typeof value === 'boolean' ? value : spec.default;
+    case 'text':
+      return typeof value === 'string'
+        ? value.slice(0, spec.maxLength ?? 200)
+        : spec.default;
   }
+}
+
+export function boolean(spec: Omit<BooleanParam, 'type'>): BooleanParam {
+  return { type: 'boolean', ...spec };
+}
+
+export function text(spec: Omit<TextParam, 'type'>): TextParam {
+  return { type: 'text', ...spec };
 }
 
 /**

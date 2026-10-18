@@ -11,7 +11,7 @@ import {
   type ParamValue,
 } from '../engine/params.ts';
 import { html } from './dom.ts';
-import { richText } from './math.ts';
+import { renderInline } from './markdown.ts';
 
 export type ChangeMode = 'preview' | 'commit';
 
@@ -33,7 +33,7 @@ const PREFIXES: Record<string, number> = {
 };
 
 /** Reads "4.5k", "100 kHz", "20 us", "-3 dB" or "1e5" as a number. */
-function parseQuantity(text: string): number | undefined {
+export function parseQuantity(text: string): number | undefined {
   // Case matters for the prefix: m is milli, M is mega.
   const match =
     /^\s*[xX×]?\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*([GMkKmuµμn]?)/.exec(
@@ -47,7 +47,7 @@ function parseQuantity(text: string): number | undefined {
   return Number.isFinite(value) ? value : undefined;
 }
 
-function formatParam(value: number, spec: NumberParam): string {
+export function formatParam(value: number, spec: NumberParam): string {
   switch (spec.unit) {
     case 'Hz':
     case 's':
@@ -87,7 +87,26 @@ function fromPosition(spec: NumberParam, position: number): number {
   ) as number;
 }
 
+/** Where `value` sits along the control's travel, from 0 to 1. */
+export const toFraction = (spec: NumberParam, value: number): number =>
+  toPosition(spec, value) / SLIDER_STEPS;
+
+/** The value at a point along the control's travel, from 0 to 1. */
+export const fromFraction = (spec: NumberParam, fraction: number): number =>
+  fromPosition(
+    spec,
+    Math.round(Math.min(1, Math.max(0, fraction)) * SLIDER_STEPS),
+  );
+
 let nextControlId = 0;
+
+function blurOnEnter(input: HTMLElement): void {
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      input.blur();
+    }
+  });
+}
 
 function field(
   label: string,
@@ -102,7 +121,7 @@ function field(
     ...content,
   );
   if (help) {
-    element.append(html('p', { class: 'control-help' }, richText(help)));
+    element.append(html('p', { class: 'control-help' }, renderInline(help)));
   }
 
   return { element, id };
@@ -260,7 +279,9 @@ function choiceControl(
     group,
   );
   if (spec.help) {
-    element.append(html('p', { class: 'control-help' }, richText(spec.help)));
+    element.append(
+      html('p', { class: 'control-help' }, renderInline(spec.help)),
+    );
   }
 
   return {
@@ -299,6 +320,34 @@ export function paramControl(
         html('span', {}, spec.label),
       );
       return { element, update: (v) => (input.checked = v as boolean) };
+    }
+
+    case 'text': {
+      const input = spec.multiline
+        ? html('textarea', { rows: 5, maxlength: spec.maxLength })
+        : html('input', {
+            type: 'text',
+            spellcheck: 'false',
+            autocomplete: 'off',
+            maxlength: spec.maxLength,
+          });
+      input.value = value as string;
+      input.addEventListener('change', () => onChange(input.value, 'commit'));
+
+      if (!spec.multiline) {
+        blurOnEnter(input);
+      }
+
+      const { element, id } = field(spec.label, spec.help, input);
+      input.id = id;
+      return {
+        element,
+        update: (v) => {
+          if (document.activeElement !== input) {
+            input.value = v as string;
+          }
+        },
+      };
     }
   }
 }

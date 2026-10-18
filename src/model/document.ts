@@ -1,9 +1,16 @@
-// The lab document: a diagram, possibly containing subsystems, plus title, notes, duration and
-// probes. Documents are immutable; every edit returns a new one, which keeps undo trivial.
+// The lab document: a diagram, possibly containing subsystems, plus title, notes, duration
+// and the layout of its panel face. Documents are immutable; every edit returns a new one, which keeps undo trivial.
 
 import { INPUT_TERMINAL, OUTPUT_TERMINAL } from '../blocks/terminals.ts';
 import type { BlockNode, PortRef, Wire } from '../engine/circuit.ts';
-import type { ParamValue, StoredParams } from '../engine/params.ts';
+import type { ParamValue, StoredParams, Unit } from '../engine/params.ts';
+import { isParameterName } from './expressions.ts';
+
+// Instrument kinds, as in blocks/instruments.ts, which the model can't import
+// without pulling in the block library.
+const PLOT_KIND = 'plot';
+const CONTROL_KIND = 'control';
+const READOUT_KIND = 'readout';
 
 export const FORMAT = 'signal-lab/2';
 export const SUBSYSTEM = 'subsystem';
@@ -11,23 +18,43 @@ export const SUBSYSTEM = 'subsystem';
 /** A block on a diagram. A subsystem block carries a diagram of its own. */
 export type LabBlock = BlockNode & {
   readonly inner?: Diagram;
+  /**
+   * Settings computed from parameters: setting name to an expression such as
+   * `fc` or `-3 - snr`. For a subsystem, the names are its parameters.
+   */
+  readonly bindings?: { readonly [setting: string]: string };
+};
+
+/**
+ * A named number that blocks in this diagram, and in subsystems inside it, can
+ * use in their bindings. A subsystem's parameters are also its settings.
+ */
+export type Parameter = {
+  readonly name: string;
+  readonly value: number;
+  readonly min: number;
+  readonly max: number;
+  readonly unit?: Unit;
+  readonly scale?: 'linear' | 'log';
 };
 
 export type Diagram = {
   readonly blocks: readonly LabBlock[];
   readonly wires: readonly Wire[];
+  /** Notes about this diagram, in the Markdown of markdown.ts. */
+  readonly notes?: string;
+  readonly parameters?: readonly Parameter[];
 };
 
-export type ProbeView = 'time' | 'spectrum';
-
 /**
- * A signal pinned to the bench. Its block is a path through subsystems, such
- * as "rx/diode".
+ * Where an instrument's widget sits on the panel face, in grid cells from the
+ * top left.
  */
-export type Probe = {
-  readonly id: string;
-  readonly at: PortRef;
-  readonly view: ProbeView;
+export type FaceSpot = {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
 };
 
 export type LabDocument = Diagram & {
@@ -36,7 +63,11 @@ export type LabDocument = Diagram & {
   readonly notes: string;
   /** Simulation window in seconds. */
   readonly duration: number;
-  readonly probes: readonly Probe[];
+  /**
+   * Where each instrument's widget sits on the face, by the instrument's full
+   * id. Instruments without a spot are placed in the first free space.
+   */
+  readonly face?: Readonly<Record<string, FaceSpot>>;
 };
 
 /** Subsystem ids leading from the top-level diagram down to one inside it. */
@@ -75,7 +106,6 @@ export function emptyDocument(): LabDocument {
     duration: 1,
     blocks: [],
     wires: [],
-    probes: [],
   };
 }
 
@@ -325,6 +355,104 @@ export function duplicate<D extends Diagram>(
   ];
 }
 
+/** Binds a block's setting to an expression, or unbinds it given none. */
+export function setBinding<D extends Diagram>(
+  diagram: D,
+  id: string,
+  setting: string,
+  expression: string | undefined,
+): D {
+  return updateBlock(diagram, id, ({ bindings, ...block }) => {
+    const { [setting]: _, ...rest } = bindings ?? {};
+    const next = expression?.trim()
+      ? { ...rest, [setting]: expression.trim() }
+      : rest;
+    return Object.keys(next).length ? { ...block, bindings: next } : block;
+  });
+}
+
+/** A parameter name based on `base` that isn't taken in the diagram. */
+export function freeParameterName(diagram: Diagram, base: string): string {
+  const stem =
+    base.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^(?=\d)/, '_') || 'p';
+  const taken = new Set((diagram.parameters ?? []).map((p) => p.name));
+  if (!taken.has(stem) && isParameterName(stem)) {
+    return stem;
+  }
+
+  for (let n = 2; ; n++) {
+    if (!taken.has(`${stem}${n}`)) {
+      return `${stem}${n}`;
+    }
+  }
+}
+
+export function addParameter<D extends Diagram>(
+  diagram: D,
+  parameter: Parameter,
+): D {
+  return {
+    ...diagram,
+    parameters: [...(diagram.parameters ?? []), parameter],
+  };
+}
+
+export function updateParameter<D extends Diagram>(
+  diagram: D,
+  name: string,
+  change: Partial<Parameter>,
+): D {
+  return {
+    ...diagram,
+    parameters: (diagram.parameters ?? []).map((p) =>
+      p.name === name ? { ...p, ...change } : p,
+    ),
+  };
+}
+
+export function removeParameter<D extends Diagram>(
+  diagram: D,
+  name: string,
+): D {
+  return {
+    ...diagram,
+    parameters: (diagram.parameters ?? []).filter((p) => p.name !== name),
+  };
+}
+
+/**
+ * Renames a parameter and rewrites the bindings that use it, in this diagram
+ * and in the subsystems inside it.
+ */
+export function renameParameter<D extends Diagram>(
+  diagram: D,
+  from: string,
+  to: string,
+): D {
+  const word = new RegExp(`\\b${from}\\b`, 'g');
+  const rewrite = <T extends Diagram>(d: T): T => ({
+    ...d,
+    blocks: d.blocks.map((block) => ({
+      ...block,
+      ...(block.kind === CONTROL_KIND && block.params.target === from
+        ? { params: { ...block.params, target: to } }
+        : {}),
+      ...(block.bindings
+        ? {
+            bindings: Object.fromEntries(
+              Object.entries(block.bindings).map(([setting, expression]) => [
+                setting,
+                expression.replace(word, to),
+              ]),
+            ),
+          }
+        : {}),
+      ...(block.inner ? { inner: rewrite(block.inner) } : {}),
+    })),
+  });
+  return rewrite(updateParameter(diagram, from, { name: to }));
+}
+
 export function setParam<D extends Diagram>(
   diagram: D,
   id: string,
@@ -373,80 +501,140 @@ export function removeWire<D extends Diagram>(diagram: D, id: string): D {
   return { ...diagram, wires: diagram.wires.filter((wire) => wire.id !== id) };
 }
 
-// Probes.
+/**
+ * What an instrument refers to: a readout's block, or the block whose setting
+ * a control sets, as a path relative to the instrument's own diagram.
+ */
+function instrumentRef(block: LabBlock): string | undefined {
+  const { params } = block;
+  if (block.kind === READOUT_KIND && typeof params.block === 'string') {
+    return params.block || undefined;
+  }
 
-export function probeAt(doc: LabDocument, at: PortRef): Probe | undefined {
-  return doc.probes.find((probe) => sameRef(probe.at, at));
+  if (block.kind === CONTROL_KIND && typeof params.target === 'string') {
+    const dot = params.target.lastIndexOf('.');
+    return dot > 0 ? params.target.slice(0, dot) : undefined;
+  }
+
+  return undefined;
 }
 
-export function addProbe(
-  doc: LabDocument,
-  at: PortRef,
-  view: ProbeView = 'time',
+function withInstrumentRef(block: LabBlock, ref: string): LabBlock {
+  if (block.kind === READOUT_KIND) {
+    return { ...block, params: { ...block.params, block: ref } };
+  }
+
+  const target = String(block.params.target);
+  return {
+    ...block,
+    params: {
+      ...block.params,
+      target: `${ref}${target.slice(target.lastIndexOf('.'))}`,
+    },
+  };
+}
+
+/** Every block in the document with its full id, depth first. */
+export function everyBlock(
+  diagram: Diagram,
+  path: Path = [],
+): { readonly id: string; readonly path: Path; readonly block: LabBlock }[] {
+  return diagram.blocks.flatMap((block) => [
+    { id: pathId(path, block.id), path, block },
+    ...(block.inner ? everyBlock(block.inner, [...path, block.id]) : []),
+  ]);
+}
+
+/**
+ * Follows blocks that moved between diagrams (by grouping or ungrouping) from
+ * `before` to `after`: the face layout, and what readouts and controls refer
+ * to. `rename` gives a block's new full id, or undefined if it is gone.
+ */
+export function moveRefs(
+  before: LabDocument,
+  after: LabDocument,
+  rename: (fullId: string) => string | undefined,
 ): LabDocument {
-  if (probeAt(doc, at)) {
+  let next = after;
+  for (const { id, path, block } of everyBlock(before)) {
+    const ref = instrumentRef(block);
+    const moved = rename(id);
+    if (ref === undefined || moved === undefined) {
+      continue;
+    }
+
+    const target = rename(pathId(path, ref)) ?? pathId(path, ref);
+    const parts = moved.split('/');
+    const prefix = parts.slice(0, -1).join('/');
+    const relative = prefix
+      ? target.startsWith(`${prefix}/`)
+        ? target.slice(prefix.length + 1)
+        : undefined
+      : target;
+    if (relative !== undefined && relative !== ref) {
+      next = updateDiagramAt(next, parts.slice(0, -1), (d) =>
+        updateBlock(d, parts[parts.length - 1]!, (b) =>
+          withInstrumentRef(b, relative),
+        ),
+      );
+    }
+  }
+
+  const face = before.face && {
+    ...Object.fromEntries(
+      Object.entries(before.face).flatMap(([id, spot]) => {
+        const moved = rename(id);
+        return moved === undefined ? [] : [[moved, spot]];
+      }),
+    ),
+  };
+  return face ? { ...next, face } : next;
+}
+
+/** Drops face spots whose instruments are gone. */
+export function pruneRefs(doc: LabDocument): LabDocument {
+  if (!doc.face) {
     return doc;
   }
 
-  return {
-    ...doc,
-    probes: [...doc.probes, { id: nextId('p', doc.probes), at, view }],
-  };
+  const entries = Object.entries(doc.face);
+  const kept = entries.filter(([id]) => blockAt(doc, id));
+  return kept.length === entries.length
+    ? doc
+    : { ...doc, face: Object.fromEntries(kept) };
 }
 
-/** Pins the port to the bench, or unpins it if it already is. */
-export function toggleProbe(doc: LabDocument, at: PortRef): LabDocument {
-  const probe = probeAt(doc, at);
-  return probe ? removeProbe(doc, probe.id) : addProbe(doc, at);
+/**
+ * Renames a parameter of the diagram at `path`, rewriting the bindings and
+ * controls that use it.
+ */
+export function renameParameterAt(
+  doc: LabDocument,
+  path: Path,
+  from: string,
+  to: string,
+): LabDocument {
+  return updateDiagramAt(doc, path, (d) => renameParameter(d, from, to));
 }
 
-export function removeProbe(doc: LabDocument, id: string): LabDocument {
-  return { ...doc, probes: doc.probes.filter((probe) => probe.id !== id) };
-}
-
-export function setProbeView(
+export function setFaceSpot(
   doc: LabDocument,
   id: string,
-  view: ProbeView,
+  spot: FaceSpot,
 ): LabDocument {
-  return {
-    ...doc,
-    probes: doc.probes.map((probe) =>
-      probe.id === id ? { ...probe, view } : probe,
-    ),
-  };
+  return { ...doc, face: { ...doc.face, [id]: spot } };
 }
 
 /**
- * Points probes at blocks that moved: `rename` maps an old full block id to
- * its new one.
+ * Sets the notes of the diagram at `path`: the document's own, or a
+ * subsystem's.
  */
-export function moveProbes(
+export function setNotes(
   doc: LabDocument,
-  rename: (fullId: string) => string | undefined,
+  path: Path,
+  notes: string,
 ): LabDocument {
-  const probes = doc.probes.flatMap((probe) => {
-    const block = rename(probe.at.block);
-    if (block === undefined) {
-      return [];
-    }
-
-    return [
-      block === probe.at.block
-        ? probe
-        : { ...probe, at: { ...probe.at, block } },
-    ];
-  });
-  return { ...doc, probes };
-}
-
-/**
- * Drops probes whose block no longer exists; returns the same document if none
- * do.
- */
-export function pruneProbes(doc: LabDocument): LabDocument {
-  const probes = doc.probes.filter((probe) => blockAt(doc, probe.at.block));
-  return probes.length === doc.probes.length ? doc : { ...doc, probes };
+  return updateDiagramAt(doc, path, (diagram) => ({ ...diagram, notes }));
 }
 
 export function setSettings(
@@ -473,6 +661,68 @@ function readRef(value: unknown): PortRef | undefined {
   return { block: value.block, port: Math.trunc(value.port) };
 }
 
+function readFace(value: unknown): Pick<LabDocument, 'face'> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const face: Record<string, FaceSpot> = {};
+  for (const [id, spot] of Object.entries(value)) {
+    if (
+      isRecord(spot) &&
+      [spot.x, spot.y, spot.w, spot.h].every(
+        (n) => isNumber(n) && n >= 0 && n < 1000,
+      )
+    ) {
+      const [x, y, w, h] = [spot.x, spot.y, spot.w, spot.h].map((n) =>
+        Math.round(n as number),
+      );
+      face[id] = { x: x!, y: y!, w: Math.max(1, w!), h: Math.max(1, h!) };
+    }
+  }
+
+  return Object.keys(face).length ? { face } : {};
+}
+
+/**
+ * Documents saved before instruments pinned signals to the bench as probes;
+ * each becomes a Plot block wired to the same output.
+ */
+function plotsFromProbes(doc: LabDocument, probes: unknown): LabDocument {
+  let next = doc;
+  let k = 0;
+  for (const probe of Array.isArray(probes) ? probes : []) {
+    const at = isRecord(probe) ? readRef(probe.at) : undefined;
+    const source = at && blockAt(next, at.block);
+    if (!at || !source) {
+      continue;
+    }
+
+    const parts = at.block.split('/');
+    const view = isRecord(probe) ? probe.view : undefined;
+    next = updateDiagramAt(next, parts.slice(0, -1), (d) => {
+      const [added, id] = addBlock(
+        d,
+        PLOT_KIND,
+        source.x + 200,
+        source.y + 96 + 24 * k++,
+        {
+          params: {
+            view: view === 'spectrum' || view === 'waterfall' ? view : 'time',
+          },
+        },
+      );
+      return connect(
+        added,
+        { block: parts[parts.length - 1]!, port: at.port },
+        { block: id, port: 0 },
+      );
+    });
+  }
+
+  return next;
+}
+
 function readParams(value: unknown): StoredParams {
   if (!isRecord(value)) {
     return {};
@@ -486,6 +736,56 @@ function readParams(value: unknown): StoredParams {
   }
 
   return params;
+}
+
+function readBindings(value: unknown): Pick<LabBlock, 'bindings'> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const bindings = Object.fromEntries(
+    Object.entries(value).filter(
+      (entry): entry is [string, string] =>
+        isString(entry[1]) && entry[1].trim() !== '',
+    ),
+  );
+  return Object.keys(bindings).length ? { bindings } : {};
+}
+
+const UNITS = new Set(['Hz', 's', 'dB', 'deg', 'V', 'x']);
+
+function readParameters(value: unknown): Pick<Diagram, 'parameters'> {
+  const parameters: Parameter[] = [];
+  for (const p of Array.isArray(value) ? value : []) {
+    if (
+      !isRecord(p) ||
+      !isString(p.name) ||
+      !isParameterName(p.name) ||
+      !isNumber(p.value) ||
+      !isNumber(p.min) ||
+      !isNumber(p.max) ||
+      p.min >= p.max
+    ) {
+      continue;
+    }
+
+    if (parameters.some((other) => other.name === p.name)) {
+      continue;
+    }
+
+    parameters.push({
+      name: p.name,
+      value: p.value,
+      min: p.min,
+      max: p.max,
+      ...(isString(p.unit) && UNITS.has(p.unit)
+        ? { unit: p.unit as Unit }
+        : {}),
+      ...(p.scale === 'log' && p.min > 0 ? { scale: 'log' as const } : {}),
+    });
+  }
+
+  return parameters.length ? { parameters } : {};
 }
 
 function readDiagram(value: Record<string, unknown>, depth: number): Diagram {
@@ -518,6 +818,7 @@ function readDiagram(value: Record<string, unknown>, depth: number): Diagram {
       params: readParams(b.params),
       ...(isString(b.name) && b.name ? { name: b.name } : {}),
       ...(inner ? { inner } : {}),
+      ...readBindings(b.bindings),
     });
   }
 
@@ -535,7 +836,12 @@ function readDiagram(value: Record<string, unknown>, depth: number): Diagram {
     }
   }
 
-  return { blocks, wires };
+  return {
+    blocks,
+    wires,
+    ...(isString(value.notes) && value.notes ? { notes: value.notes } : {}),
+    ...readParameters(value.parameters),
+  };
 }
 
 /**
@@ -547,22 +853,6 @@ export function readDocument(value: unknown): LabDocument {
     throw new Error("This file isn't a Signal Lab diagram.");
   }
 
-  const probes: Probe[] = [];
-  for (const p of Array.isArray(value.probes) ? value.probes : []) {
-    if (!isRecord(p) || !isString(p.id)) {
-      continue;
-    }
-
-    const at = readRef(p.at);
-    if (at) {
-      probes.push({
-        id: p.id,
-        at,
-        view: p.view === 'spectrum' ? 'spectrum' : 'time',
-      });
-    }
-  }
-
   const doc: LabDocument = {
     format: FORMAT,
     title: isString(value.title) ? value.title : 'Untitled',
@@ -570,10 +860,7 @@ export function readDocument(value: unknown): LabDocument {
     duration:
       isNumber(value.duration) && value.duration > 0 ? value.duration : 1,
     ...readDiagram(value, 0),
-    probes,
+    ...readFace(value.face),
   };
-  return {
-    ...doc,
-    probes: probes.filter((probe) => blockAt(doc, probe.at.block)),
-  };
+  return pruneRefs(plotsFromProbes(doc, value.probes));
 }

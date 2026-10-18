@@ -1,6 +1,7 @@
 import { blockType } from '../src/blocks/index.ts';
 import type { Circuit } from '../src/engine/circuit.ts';
 import type { StoredParams } from '../src/engine/params.ts';
+import { seededNoise } from '../src/engine/random.ts';
 import type { Signal } from '../src/engine/signal.ts';
 import { Simulator, type SimulationResult } from '../src/engine/simulator.ts';
 import { ref } from '../src/model/build.ts';
@@ -51,6 +52,7 @@ export function simulateDocument(doc: LabDocument) {
   return {
     signals: signalsWithAliases(result.signals, flat.aliases),
     status: blockStatuses(doc, flat, result.status),
+    readings: result.readings,
   };
 }
 
@@ -67,4 +69,10 @@ export function output(result: SimulationResult, port: string): Signal {
 
 export function decibels(power: number): number {
   return 10 * Math.log10(power);
+}
+
+/** `length` standard normal samples, the same for a given seed. */
+export function gaussianNoise(length: number, seed: number): Float32Array {
+  const normal = seededNoise(seed, 1);
+  return Float32Array.from({ length }, () => normal());
 }

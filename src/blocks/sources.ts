@@ -9,7 +9,7 @@ const RATES = [
 ];
 
 /** Every source picks its own sample rate; blocks downstream inherit it. */
-function rate(fallback = 48000) {
+export function rate(fallback = 48000) {
   return number({
     label: 'Sample rate',
     unit: 'Hz',

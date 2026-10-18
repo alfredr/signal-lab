@@ -27,7 +27,6 @@ function doc(
     title: 'test',
     notes: '',
     duration,
-    probes: [],
     ...diagram(parts, links),
   };
 }
@@ -209,34 +208,37 @@ describe('antennas', () => {
 });
 
 describe('grouping', () => {
-  test('grouping and ungrouping leave every signal unchanged and keep probes', () => {
+  test('grouping and ungrouping leave every signal unchanged, and instruments follow', () => {
     const original = examples[0]!.build();
     const baseline = simulate(original).signals.get('dcBlock:0')!.data;
-
     const grouped = groupAt(
-      {
-        ...original,
-        probes: [
-          ...original.probes,
-          { id: 'p9', at: { block: 'dc', port: 0 }, view: 'time' },
-        ],
-      },
+      original,
       [],
-      new Set(['dc', 'up', 'modulator', 'carrier']),
+      new Set(['detector', 'audio', 'down', 'dcBlock', 'audioOut']),
     );
     assert.ok(grouped);
-    const groupedRun = simulate(grouped.doc);
-    assert.deepEqual(groupedRun.signals.get('dcBlock:0')!.data, baseline);
-    const moved = grouped.doc.probes.find((p) => p.id === 'p9')!;
-    assert.equal(moved.at.block, `${grouped.id}/dc`);
-    assert.ok(groupedRun.signals.get(`${moved.at.block}:0`));
+    const { id } = grouped;
+    assert.deepEqual(
+      simulate(grouped.doc).signals.get(`${id}/dcBlock:0`)!.data,
+      baseline,
+    );
+    // The plot's face spot goes inside with it, and the knob left outside
+    // still finds the capacitor.
+    assert.deepEqual(
+      grouped.doc.face?.[`${id}/audioOut`],
+      original.face?.audioOut,
+    );
+    const knob = (doc: LabDocument) =>
+      doc.blocks.find((b) => b.id === 'rcKnob')!.params.target;
+    assert.equal(knob(grouped.doc), `${id}/detector.rc`);
 
-    const ungrouped = ungroupAt(grouped.doc, [], grouped.id);
+    const ungrouped = ungroupAt(grouped.doc, [], id);
     assert.deepEqual(
       simulate(ungrouped).signals.get('dcBlock:0')!.data,
       baseline,
     );
-    assert.equal(ungrouped.probes.find((p) => p.id === 'p9')!.at.block, 'dc');
+    assert.equal(knob(ungrouped), 'detector.rc');
+    assert.deepEqual(ungrouped.face?.audioOut, original.face?.audioOut);
   });
 });
 
