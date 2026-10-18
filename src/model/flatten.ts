@@ -3,17 +3,30 @@
 // whatever connects to the subsystem outside. Antennas are joined through a hidden Air block.
 // The engine never sees hierarchy, so caching and loops work across subsystem boundaries.
 
-import { airType } from "../blocks/radio.ts";
-import type { BlockStatus } from "../engine/simulator.ts";
-import { portKey, type BlockNode, type Circuit, type PortRef, type Wire } from "../engine/circuit.ts";
-import type { Signal } from "../engine/signal.ts";
-import { isSubsystem, pathId, terminals, type Diagram, type LabDocument, type Path } from "./document.ts";
-import { displayName } from "./subsystems.ts";
+import { airType } from '../blocks/radio.ts';
+import {
+  portKey,
+  type BlockNode,
+  type Circuit,
+  type PortRef,
+  type Wire,
+} from '../engine/circuit.ts';
+import type { Signal } from '../engine/signal.ts';
+import type { BlockStatus } from '../engine/simulator.ts';
+import {
+  isSubsystem,
+  pathId,
+  terminals,
+  type Diagram,
+  type LabDocument,
+  type Path,
+} from './document.ts';
+import { displayName } from './subsystems.ts';
 
 /** Id of the hidden block that carries everything transmitted. */
-export const AIR = "@air";
-const TRANSMIT = "antenna-tx";
-const RECEIVE = "antenna-rx";
+const AIR = '@air';
+const TRANSMIT = 'antenna-tx';
+const RECEIVE = 'antenna-rx';
 
 export type Flattened = {
   readonly circuit: Circuit;
@@ -34,61 +47,140 @@ export function flatten(doc: LabDocument): Flattened {
     // A subsystem's ports resolve to its terminals, whose hidden port 0 faces outward.
     const source = (ref: PortRef): PortRef | undefined => {
       const block = byId.get(ref.block);
-      if (!block) return undefined;
-      if (!isSubsystem(block)) return { block: pathId(path, ref.block), port: ref.port };
+      if (!block) {
+        return undefined;
+      }
+
+      if (!isSubsystem(block)) {
+        return { block: pathId(path, ref.block), port: ref.port };
+      }
+
       const terminal = terminals(block.inner).outputs[ref.port];
-      return terminal && { block: pathId([...path, block.id], terminal.id), port: 0 };
+      return (
+        terminal && {
+          block: pathId([...path, block.id], terminal.id),
+          port: 0,
+        }
+      );
     };
+
     const target = (ref: PortRef): PortRef | undefined => {
       const block = byId.get(ref.block);
-      if (!block) return undefined;
-      if (!isSubsystem(block)) return { block: pathId(path, ref.block), port: ref.port };
+      if (!block) {
+        return undefined;
+      }
+
+      if (!isSubsystem(block)) {
+        return { block: pathId(path, ref.block), port: ref.port };
+      }
+
       const terminal = terminals(block.inner).inputs[ref.port];
-      return terminal && { block: pathId([...path, block.id], terminal.id), port: 0 };
+      return (
+        terminal && {
+          block: pathId([...path, block.id], terminal.id),
+          port: 0,
+        }
+      );
     };
 
     for (const block of diagram.blocks) {
       const id = pathId(path, block.id);
       if (isSubsystem(block)) {
         walk(block.inner, [...path, block.id]);
-        terminals(block.inner).outputs.forEach((terminal, port) => aliases.set(portKey({ block: id, port }), portKey({ block: pathId([...path, block.id], terminal.id), port: 0 })));
+        terminals(block.inner).outputs.forEach((terminal, port) =>
+          aliases.set(
+            portKey({ block: id, port }),
+            portKey({
+              block: pathId([...path, block.id], terminal.id),
+              port: 0,
+            }),
+          ),
+        );
         continue;
       }
+
       blocks.push({ id, kind: block.kind, x: 0, y: 0, params: block.params });
-      if (block.kind === TRANSMIT) transmit.push(id);
-      if (block.kind === RECEIVE) receive.push(id);
+
+      if (block.kind === TRANSMIT) {
+        transmit.push(id);
+      }
+
+      if (block.kind === RECEIVE) {
+        receive.push(id);
+      }
     }
+
     for (const wire of diagram.wires) {
       const from = source(wire.from);
       const to = target(wire.to);
-      if (from && to) wires.push({ id: `${pathId(path, wire.id)}`, from, to });
+      if (from && to) {
+        wires.push({ id: `${pathId(path, wire.id)}`, from, to });
+      }
     }
   };
+
   walk(doc, []);
 
   if (transmit.length) {
-    blocks.push({ id: AIR, kind: airType(transmit.length).kind, x: 0, y: 0, params: {} });
-    transmit.forEach((id, k) => wires.push({ id: `${AIR}:in${k}`, from: { block: id, port: 0 }, to: { block: AIR, port: k } }));
-    receive.forEach((id, k) => wires.push({ id: `${AIR}:out${k}`, from: { block: AIR, port: 0 }, to: { block: id, port: 0 } }));
+    blocks.push({
+      id: AIR,
+      kind: airType(transmit.length).kind,
+      x: 0,
+      y: 0,
+      params: {},
+    });
+    transmit.forEach((id, k) =>
+      wires.push({
+        id: `${AIR}:in${k}`,
+        from: { block: id, port: 0 },
+        to: { block: AIR, port: k },
+      }),
+    );
+    receive.forEach((id, k) =>
+      wires.push({
+        id: `${AIR}:out${k}`,
+        from: { block: AIR, port: 0 },
+        to: { block: id, port: 0 },
+      }),
+    );
   }
-  return { circuit: { duration: doc.duration, blocks, wires }, aliases, transmitters: transmit.length };
+
+  return {
+    circuit: { duration: doc.duration, blocks, wires },
+    aliases,
+    transmitters: transmit.length,
+  };
 }
 
-/** Signals by port key for every block at every level, subsystem outputs included. */
-export function signalsWithAliases(signals: ReadonlyMap<string, Signal>, aliases: ReadonlyMap<string, string>): Map<string, Signal> {
+/**
+ * Signals by port key for every block at every level, subsystem outputs
+ * included.
+ */
+export function signalsWithAliases(
+  signals: ReadonlyMap<string, Signal>,
+  aliases: ReadonlyMap<string, string>,
+): Map<string, Signal> {
   const all = new Map(signals);
   for (const [key, engineKey] of aliases) {
     const signal = signals.get(engineKey);
-    if (signal) all.set(key, signal);
+    if (signal) {
+      all.set(key, signal);
+    }
   }
+
   return all;
 }
 
 /**
- * Status for every block in the document by full id. A subsystem reports the first error inside
- * it, or the rates of its outputs; a receive antenna explains when nothing is on the air.
+ * Status for every block in the document by full id. A subsystem reports the
+ * first error inside it, or the rates of its outputs; a receive antenna
+ * explains when nothing is on the air.
  */
-export function blockStatuses(doc: LabDocument, flat: Flattened, engine: ReadonlyMap<string, BlockStatus>): Map<string, BlockStatus> {
+export function blockStatuses(
+  doc: LabDocument,
+  flat: Flattened,
+  engine: ReadonlyMap<string, BlockStatus>,
+): Map<string, BlockStatus> {
   const statuses = new Map<string, BlockStatus>();
   const air = engine.get(AIR);
 
@@ -98,26 +190,38 @@ export function blockStatuses(doc: LabDocument, flat: Flattened, engine: Readonl
       let status: BlockStatus;
       if (isSubsystem(block)) {
         const inner = visit(block.inner, [...path, block.id]);
-        const failing = inner.findIndex((s) => s.state === "error");
+        const failing = inner.findIndex((s) => s.state === 'error');
         if (failing >= 0) {
           const culprit = block.inner.blocks[failing]!;
-          const problem = inner[failing] as Extract<BlockStatus, { state: "error" }>;
-          status = { state: "error", message: `Inside, ${displayName(culprit)}: ${problem.message}` };
+          const problem = inner[failing] as Extract<
+            BlockStatus,
+            { state: 'error' }
+          >;
+          status = {
+            state: 'error',
+            message: `Inside, ${displayName(culprit)}: ${problem.message}`,
+          };
         } else {
           const rates = terminals(block.inner).outputs.map((t) => {
             const s = engine.get(pathId([...path, block.id], t.id));
-            return s?.state === "ok" ? s.rates[0] ?? NaN : NaN;
+            return s?.state === 'ok' ? (s.rates[0] ?? NaN) : NaN;
           });
-          const running = inner.some((s) => s.state === "ok");
-          status = running ? { state: "ok", rates } : { state: "idle", reason: "Nothing inside is running." };
+          const running = inner.some((s) => s.state === 'ok');
+          status = running
+            ? { state: 'ok', rates }
+            : { state: 'idle', reason: 'Nothing inside is running.' };
         }
       } else if (block.kind === RECEIVE && flat.transmitters === 0) {
-        status = { state: "idle", reason: "Nothing is on the air. Add a Transmit antenna." };
-      } else if (block.kind === RECEIVE && air?.state === "error") {
-        status = { state: "error", message: `On the air: ${air.message}` };
+        status = {
+          state: 'idle',
+          reason: 'Nothing is on the air. Add a Transmit antenna.',
+        };
+      } else if (block.kind === RECEIVE && air?.state === 'error') {
+        status = { state: 'error', message: `On the air: ${air.message}` };
       } else {
-        status = engine.get(id) ?? { state: "idle", reason: "Not simulated." };
+        status = engine.get(id) ?? { state: 'idle', reason: 'Not simulated.' };
       }
+
       statuses.set(id, status);
       return status;
     });

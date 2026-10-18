@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["import", "typescript"],
+  "jsPlugins": ["@stylistic/eslint-plugin", "./scripts/lint/rules.mjs"],
+  "categories": { "correctness": "off" },
+  "rules": {
+    "curly": ["error", "all"],
+    "lab/no-instanceof": "error",
+    "typescript/consistent-type-definitions": ["error", "type"],
+    "@stylistic/padding-line-between-statements": ["error",
+      { "blankLine": "always", "prev": "*", "next": "multiline-block-like" },
+      { "blankLine": "any", "prev": ["const", "let"], "next": "multiline-block-like" },
+      { "blankLine": "always", "prev": "multiline-block-like", "next": "*" }
+    ],
+    "import/first": ["error", "absolute-first"],
+    "import/no-duplicates": "error",
+    "import/extensions": ["error", "always", { "ignorePackages": true, "checkTypeImports": true }]
+  }
+}

@@ -1,6 +1,9 @@
-import type { StoredParams } from "./params.ts";
+import type { StoredParams } from './params.ts';
 
-/** One port of one block: an output when it is a wire's source, an input when it is a target. */
+/**
+ * One port of one block: an output when it is a wire's source, an input when
+ * it is a target.
+ */
 export type PortRef = {
   readonly block: string;
   readonly port: number;
@@ -23,7 +26,10 @@ export type Wire = {
   readonly to: PortRef;
 };
 
-/** Everything the simulator needs: the blocks, how they connect, and how long to run. */
+/**
+ * Everything the simulator needs: the blocks, how they connect, and how long
+ * to run.
+ */
 export type Circuit = {
   /** Simulation window in seconds. */
   readonly duration: number;

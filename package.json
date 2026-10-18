@@ -5,17 +5,28 @@
   "description": "Sketch block diagrams of radios and other signal chains, simulate them, and plot or listen anywhere along the way.",
   "type": "module",
   "scripts": {
-    "build": "node scripts/build.ts",
     "dev": "node scripts/dev.ts",
-    "check": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json && tsc -p scripts/tsconfig.json",
+    "build": "node scripts/build.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json && tsc -p scripts/tsconfig.json",
     "test": "node --test \"test/**/*.test.ts\"",
-    "gadget": "node scripts/build.ts && node scripts/install-gadget.ts"
+    "lint": "oxlint src scripts test --deny-warnings",
+    "deadcode": "knip",
+    "fmt": "oxlint src scripts test --fix && oxfmt src scripts test",
+    "fmt:check": "oxfmt --check src scripts test",
+    "check": "npm run lint && npm run fmt:check && npm run typecheck && npm run deadcode && npm test",
+    "gadget": "node scripts/build.ts && node scripts/install-gadget.ts",
+    "prepare": "husky"
   },
   "engines": {
     "node": ">=23.6"
   },
   "devDependencies": {
+    "@stylistic/eslint-plugin": "5.10.0",
     "@types/node": "25.9.9",
+    "husky": "9.1.7",
+    "knip": "6.40.0",
+    "oxfmt": "0.71.0",
+    "oxlint": "1.86.0",
     "typescript": "7.0.2"
   },
   "dependencies": {

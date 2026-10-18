@@ -1,3 +1,3 @@
-import { App } from "./ui/app.ts";
+import { App } from './ui/app.ts';
 
 new App();

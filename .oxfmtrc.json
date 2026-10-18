@@ -1,0 +1,11 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 79,
+  "singleQuote": true,
+  "endOfLine": "lf",
+  "insertFinalNewline": true,
+  "objectWrap": "preserve",
+  "sortImports": true,
+  "jsdoc": { "capitalizeDescriptions": false, "addDefaultToDescription": false },
+  "ignorePatterns": ["**/*.css"]
+}

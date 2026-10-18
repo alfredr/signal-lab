@@ -1,6 +1,7 @@
 /**
- * The current value plus undo and redo stacks. Continuous edits such as drags call preview()
- * as they go and commit() at the end, which records the whole gesture as one undo step.
+ * The current value plus undo and redo stacks. Continuous edits such as drags
+ * call preview() as they go and commit() at the end, which records the whole
+ * gesture as one undo step.
  */
 export class History<T> {
   static readonly LIMIT = 200;
@@ -37,11 +38,17 @@ export class History<T> {
   commit(next: T): void {
     const before = this.#anchor ? this.#anchor.value : this.#present;
     this.#anchor = undefined;
+
     if (next !== before) {
       this.#past.push(before);
-      if (this.#past.length > History.LIMIT) this.#past.shift();
+
+      if (this.#past.length > History.LIMIT) {
+        this.#past.shift();
+      }
+
       this.#future = [];
     }
+
     this.#present = next;
     this.#notify();
   }
@@ -52,16 +59,23 @@ export class History<T> {
       this.#anchor = undefined;
     } else {
       const previous = this.#past.pop();
-      if (previous === undefined) return;
+      if (previous === undefined) {
+        return;
+      }
+
       this.#future.push(this.#present);
       this.#present = previous;
     }
+
     this.#notify();
   }
 
   redo(): void {
     const next = this.#future.pop();
-    if (next === undefined) return;
+    if (next === undefined) {
+      return;
+    }
+
     this.#past.push(this.#present);
     this.#present = next;
     this.#notify();
@@ -73,6 +87,8 @@ export class History<T> {
   }
 
   #notify(): void {
-    for (const listener of this.#listeners) listener();
+    for (const listener of this.#listeners) {
+      listener();
+    }
   }
 }

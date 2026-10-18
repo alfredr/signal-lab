@@ -1,21 +1,29 @@
-import { fft, isPowerOfTwo } from "./fft.ts";
+import { fft, isPowerOfTwo } from './fft.ts';
 
 export type Spectrum = {
   /** Bin spacing in Hz: bin k is centered on k * binWidth. */
   readonly binWidth: number;
   /**
-   * One-sided power per bin, bins 0 to size / 2. Scaled so a sine of amplitude A reads A^2 / 2
-   * at its peak, the sine's power, whatever the window or FFT size.
+   * One-sided power per bin, bins 0 to size / 2. Scaled so a sine of amplitude
+   * A reads A^2 / 2 at its peak, the sine's power, whatever the window or FFT
+   * size.
    */
   readonly power: Float64Array;
 };
 
 /**
- * Averaged spectrum (Welch's method): Hann-windowed segments of `size` samples with 50%
- * overlap. A signal shorter than one segment is zero-padded.
+ * Averaged spectrum (Welch's method): Hann-windowed segments of `size` samples
+ * with 50% overlap. A signal shorter than one segment is zero-padded.
  */
-export function welch(data: Float32Array, rate: number, size: number): Spectrum {
-  if (!isPowerOfTwo(size)) throw new Error(`FFT size ${size} is not a power of two.`);
+export function welch(
+  data: Float32Array,
+  rate: number,
+  size: number,
+): Spectrum {
+  if (!isPowerOfTwo(size)) {
+    throw new Error(`FFT size ${size} is not a power of two.`);
+  }
+
   const window = new Float64Array(size);
   let windowSum = 0;
   for (let i = 0; i < size; i++) {
@@ -35,13 +43,20 @@ export function welch(data: Float32Array, rate: number, size: number): Spectrum 
       re[i] = j < data.length ? data[j] * window[i] : 0;
       im[i] = 0;
     }
+
     fft(re, im);
-    for (let k = 0; k <= size / 2; k++) power[k] += re[k] * re[k] + im[k] * im[k];
+
+    for (let k = 0; k <= size / 2; k++) {
+      power[k] += re[k] * re[k] + im[k] * im[k];
+    }
   }
 
   // |X|^2 / (sum w)^2 gives A^2 / 4 for each half of a sine; doubling folds in the negative
   // frequencies. DC and Nyquist have no mirror image.
   const scale = 1 / (segments * windowSum * windowSum);
-  for (let k = 0; k <= size / 2; k++) power[k] *= k === 0 || k === size / 2 ? scale : 2 * scale;
+  for (let k = 0; k <= size / 2; k++) {
+    power[k] *= k === 0 || k === size / 2 ? scale : 2 * scale;
+  }
+
   return { binWidth: rate / size, power };
 }

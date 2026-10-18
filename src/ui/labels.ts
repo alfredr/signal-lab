@@ -1,34 +1,50 @@
-import { visiblePorts } from "../engine/block.ts";
-import type { PortRef } from "../engine/circuit.ts";
-import { si } from "../engine/format.ts";
-import type { BlockStatus } from "../engine/simulator.ts";
-import { blockAt, type LabDocument } from "../model/document.ts";
-import { displayName, typeOf } from "../model/subsystems.ts";
+import { visiblePorts } from '../engine/block.ts';
+import type { PortRef } from '../engine/circuit.ts';
+import { si } from '../engine/format.ts';
+import type { BlockStatus } from '../engine/simulator.ts';
+import { blockAt, type LabDocument } from '../model/document.ts';
+import { displayName, typeOf } from '../model/subsystems.ts';
 
 /**
- * A readable name for a port anywhere in the document: the blocks along its path, then the
- * port's own name if the block has more than one. "Station A › Modulator", "Phase splitter Q".
+ * A readable name for a port anywhere in the document: the blocks along its
+ * path, then the port's own name if the block has more than one. "Station A ›
+ * Modulator", "Phase splitter Q".
  */
-export function portLabel(doc: LabDocument, ref: PortRef, direction: "in" | "out" = "out"): string {
-  const parts = ref.block.split("/");
+export function portLabel(
+  doc: LabDocument,
+  ref: PortRef,
+  direction: 'in' | 'out' = 'out',
+): string {
+  const parts = ref.block.split('/');
   const names = parts.map((_, i) => {
-    const block = blockAt(doc, parts.slice(0, i + 1).join("/"));
-    return block ? displayName(block) : "?";
+    const block = blockAt(doc, parts.slice(0, i + 1).join('/'));
+    return block ? displayName(block) : '?';
   });
   const block = blockAt(doc, ref.block);
   const type = block && typeOf(block);
-  const ports = (direction === "out" ? type?.outputs : type?.inputs) ?? [];
-  const port = visiblePorts(ports).length > 1 ? ` ${ports[ref.port]?.name ?? ref.port}` : "";
-  return `${names.join(" › ")}${port}`;
+  const ports = (direction === 'out' ? type?.outputs : type?.inputs) ?? [];
+  const port =
+    visiblePorts(ports).length > 1
+      ? ` ${ports[ref.port]?.name ?? ref.port}`
+      : '';
+  return `${names.join(' › ')}${port}`;
 }
 
-/** The CSS color for probe number `n` (1-based); the palette has six and repeats. */
+/**
+ * The CSS color for probe number `n` (1-based); the palette has six and
+ * repeats.
+ */
 export function probeColor(n: number): string {
   return `var(--probe-${((n - 1) % 6) + 1})`;
 }
 
 /** An output's sample rate for display, if it has a signal. */
-export function rateLabel(status: BlockStatus | undefined, port: number): string | undefined {
-  const rate = status?.state === "ok" ? status.rates[port] : undefined;
-  return rate !== undefined && Number.isFinite(rate) ? si(rate, "Hz") : undefined;
+export function rateLabel(
+  status: BlockStatus | undefined,
+  port: number,
+): string | undefined {
+  const rate = status?.state === 'ok' ? status.rates[port] : undefined;
+  return rate !== undefined && Number.isFinite(rate)
+    ? si(rate, 'Hz')
+    : undefined;
 }

@@ -1,0 +1,46 @@
+[tools]
+node = "24"
+
+[env]
+_.path = ["{{config_root}}/node_modules/.bin"]
+
+[tasks.install]
+description = "Install npm dependencies from the lockfile"
+run = "npm ci"
+sources = ["package.json", "package-lock.json"]
+outputs = ["node_modules/.package-lock.json"]
+
+[tasks.dev]
+description = "Dev server on http://localhost:5173, rebuilding on change"
+depends = ["install"]
+run = "npm run dev"
+
+[tasks.build]
+description = "Static build into dist/"
+depends = ["install"]
+run = "npm run build"
+
+[tasks.typecheck]
+description = "Type-check the app, tests and scripts"
+depends = ["install"]
+run = "npm run typecheck"
+
+[tasks.test]
+description = "Run the engine, DSP and model tests"
+depends = ["install"]
+run = "npm test"
+
+[tasks.fmt]
+description = "Fix lint where it can, then format"
+depends = ["install"]
+run = "npm run fmt"
+
+[tasks.check]
+description = "Check lint, formatting, types, dead code and tests"
+depends = ["install"]
+run = "npm run check"
+
+[tasks.gadget]
+description = "Build and install into the blog as a gadget (BLOG_DIR, default ../blog)"
+depends = ["install"]
+run = "npm run gadget"

@@ -8,5 +8,11 @@
     "rootDir": "..",
     "noEmit": true
   },
-  "include": [".", "../src/engine", "../src/dsp", "../src/blocks", "../src/model"]
+  "include": [
+    ".",
+    "../src/engine",
+    "../src/dsp",
+    "../src/blocks",
+    "../src/model"
+  ]
 }
