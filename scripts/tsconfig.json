@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["es2024"],
+    "types": ["node"],
+    "rootDir": ".",
+    "noEmit": true
+  },
+  "include": ["."]
+}

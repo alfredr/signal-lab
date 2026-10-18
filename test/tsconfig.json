@@ -1,0 +1,12 @@
+{
+  // Type-checks the tests along with the parts of the app they cover. No DOM in lib: the
+  // engine, DSP and blocks must stay runnable outside a browser.
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["es2024"],
+    "types": ["node"],
+    "rootDir": "..",
+    "noEmit": true
+  },
+  "include": [".", "../src/engine", "../src/dsp", "../src/blocks"]
+}

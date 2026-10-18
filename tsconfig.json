@@ -1,0 +1,22 @@
+{
+  // The browser app. Sources import each other with .ts extensions, which tsc rewrites to .js,
+  // so the emitted modules run in the browser as-is and the tests run on the sources directly.
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "nodenext",
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "types": [],
+    "rootDir": "src",
+    "outDir": "dist/js",
+    "strict": true,
+    "noImplicitOverride": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "rewriteRelativeImportExtensions": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}

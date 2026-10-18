@@ -1,0 +1,21 @@
+{
+  "name": "signal-lab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sketch block diagrams of radios and other signal chains, simulate them, and plot or listen anywhere along the way.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "dev": "node scripts/dev.ts",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json && tsc -p scripts/tsconfig.json",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "gadget": "node scripts/build.ts && node scripts/install-gadget.ts"
+  },
+  "engines": {
+    "node": ">=23.6"
+  },
+  "devDependencies": {
+    "@types/node": "25.9.9",
+    "typescript": "7.0.2"
+  }
+}
