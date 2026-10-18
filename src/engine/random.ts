@@ -28,6 +28,14 @@ export function gaussian(uniform: () => number): () => number {
   };
 }
 
+/**
+ * Gaussian noise that is the same on every run: seeded by the block (so two noise blocks
+ * differ) and by the user's seed setting (so a new realization is one knob away).
+ */
+export function seededNoise(blockSeed: number, userSeed: number): () => number {
+  return gaussian(mulberry32(blockSeed ^ Math.imul(userSeed, 0x9e3779b1)));
+}
+
 /** cyrb53: a fast 53-bit string hash, good enough to fingerprint inputs for caching. */
 export function hash(text: string, seed = 0): number {
   let h1 = 0xdeadbeef ^ seed;

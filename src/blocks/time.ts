@@ -8,7 +8,7 @@ export const delay = defineBlock({
   kind: "delay",
   label: "Delay",
   category: "Time and rate",
-  description: "Holds the signal back by a fixed time (at least one sample). Every feedback loop needs one: it is what makes the loop's next output depend only on the past.",
+  description: String.raw`Holds the signal back by $\tau$, at least one sample. Every feedback loop needs a delay: it is what makes the loop's next output depend only on the past.`,
   inputs: [{ name: "in" }],
   outputs: [{ name: "out" }],
   params: {
@@ -17,24 +17,10 @@ export const delay = defineBlock({
   summary: (p) => si(p.time, "s"),
   create(p, context): DelayProcessor {
     const latency = Math.max(1, Math.round(p.time * context.outputRates[0]));
-    // ring[k] holds the output due at the next time t with t % latency === k.
-    const ring = new Float32Array(latency);
-    let position = 0;
     return {
       latency,
-      pull([out]) {
-        for (let i = 0; i < out.length; i++) out[i] = ring[(position + i) % latency];
-      },
-      push([input]) {
-        for (let i = 0; i < input.length; i++) ring[(position + i) % latency] = input[i];
-        position = (position + input.length) % latency;
-      },
-      process([input], [out]) {
-        for (let i = 0; i < out.length; i++) {
-          out[i] = ring[position];
-          ring[position] = input[i];
-          position = (position + 1) % latency;
-        }
+      process([x], [y], start, end) {
+        for (let i = start; i < end; i++) y[i] = i >= latency ? x[i - latency] : 0;
       },
     };
   },
@@ -44,15 +30,14 @@ export const hilbert = defineBlock({
   kind: "hilbert",
   label: "Phase splitter",
   category: "Time and rate",
-  description:
-    "Splits a signal into two copies 90° apart at every frequency (a Hilbert transformer). I is the input delayed to match; Q lags it by 90°. Feeding I and Q to two mixers builds the phasing SSB transmitter.",
+  description: String.raw`Splits a signal into two copies $90^\circ$ apart at every frequency (a Hilbert transformer). I is the input delayed to match; Q lags it by $90^\circ$. Two mixers fed with I and Q make the phasing SSB transmitter.`,
   inputs: [{ name: "in" }],
   outputs: [{ name: "I" }, { name: "Q" }],
   params: {
     taps: choice({
       label: "Length",
       default: "255",
-      help: "Longer filters hold 90° down to lower frequencies, at the cost of more delay.",
+      help: String.raw`Longer filters hold $90^\circ$ down to lower frequencies, at the cost of more delay.`,
       options: [
         { value: "63", label: "63" },
         { value: "127", label: "127" },
@@ -68,9 +53,9 @@ export const hilbert = defineBlock({
     const quadrature = new Fir(hilbertTaps(length));
     const inPhase = new SampleDelay((length - 1) / 2);
     return {
-      process([x], [i, q]) {
-        inPhase.process(x, i);
-        quadrature.process(x, q);
+      process([x], [i, q], start, end) {
+        inPhase.process(x, i, start, end);
+        quadrature.process(x, q, start, end);
       },
     };
   },
@@ -81,7 +66,7 @@ export const resample = defineBlock({
   label: "Resample",
   category: "Time and rate",
   description:
-    "Changes the sample rate by a whole-number factor, filtering to prevent aliasing or imaging. Run audio at an audio rate and only the RF stages at a high one.",
+    "Changes the sample rate by a whole-number factor, filtering out aliases or images. Keep audio at an audio rate and run only the RF stages fast.",
   inputs: [{ name: "in" }],
   outputs: [{ name: "out" }],
   params: {
@@ -101,6 +86,7 @@ export const resample = defineBlock({
     return [p.direction === "up" ? rate * p.factor : rate / p.factor];
   },
   create(p) {
+    // Never in a loop, so this is a single call over the whole window.
     return {
       process([x], [y]) {
         if (p.direction === "up") upsample(x, p.factor, y);

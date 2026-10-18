@@ -3,9 +3,10 @@
 // Time model: every wire carries a whole-window signal at its own sample rate. Blocks are
 // causal stream processors. The simulator splits the block graph into strongly connected
 // components and runs them upstream first. A lone block runs in a single call over the whole
-// window. A feedback loop (a component with a cycle) must contain a Delay, and its blocks are
+// window. A feedback loop (a component with a cycle) must contain a delay, and its blocks are
 // stepped together in chunks no longer than the shortest delay, so every value a block reads
-// already exists. Loops run at a single sample rate.
+// already exists. Loops run at a single sample rate. Processors index the whole-window arrays
+// directly, so stepping a loop one sample at a time allocates nothing.
 //
 // Results are cached per block, keyed by a fingerprint of the block's settings and everything
 // upstream of it, so changing one knob recomputes only what sits downstream of it.
@@ -13,6 +14,7 @@
 import { isDelayProcessor, RateError, sharedRate, type BlockType, type DelayProcessor, type Processor } from "./block.ts";
 import { portKey, type BlockNode, type Circuit, type PortRef } from "./circuit.ts";
 import { resolveParams, type ParamSpecs, type ParamValues } from "./params.ts";
+import { errorMessage, errorName } from "./errors.ts";
 import { hash } from "./random.ts";
 import { sampleCount, type Signal } from "./signal.ts";
 
@@ -21,20 +23,20 @@ export type BlockStatus =
   | { readonly state: "idle"; readonly reason: string }
   | { readonly state: "error"; readonly message: string };
 
-export interface SimulationResult {
+export type SimulationResult = {
   /** Signals by output port, keyed with portKey. */
   readonly signals: ReadonlyMap<string, Signal>;
   readonly status: ReadonlyMap<string, BlockStatus>;
   /** Blocks computed afresh this run, rather than reused from the last one. */
   readonly recomputed: number;
-}
+};
 
 export type BlockLookup = (kind: string) => BlockType | undefined;
 
 /** The most samples held across all wires at once: 64 M floats, 256 MB. */
 const SAMPLE_BUDGET = 64_000_000;
 
-interface Node {
+type Node = {
   readonly id: string;
   /** The user's name for the block, or its type label. */
   readonly label: string;
@@ -44,22 +46,27 @@ interface Node {
   readonly sources: readonly (PortRef | undefined)[];
   /** Fingerprint of the block's own settings. */
   readonly local: string;
-}
+};
 
-interface Outcome {
+type Outcome = {
   readonly status: BlockStatus;
   readonly outputs: readonly Signal[];
-}
+};
 
-interface CacheEntry extends Outcome {
+type CacheEntry = Outcome & {
   readonly signature: number;
-}
+};
 
-interface Budget {
+type Budget = {
   remaining: number;
+};
+
+class BudgetError extends Error {
+  override readonly name = "BudgetError";
 }
 
-class BudgetError extends Error {}
+/** Errors whose message is written for the user; anything else is reported as a crash. */
+const EXPLAINED = new Set(["RateError", "BudgetError"]);
 
 export class Simulator {
   readonly #lookup: BlockLookup;
@@ -227,9 +234,12 @@ function runBlock(node: Node, duration: number, signals: ReadonlyMap<string, Sig
     const rates = inputRates.map((rate) => rate ?? fill);
     const outputs = allocate(outputRates, duration, budget);
     const processor = type.create(params, { inputRates: rates, outputRates, duration, seed: seedOf(node) });
+    const end = outputs[0]?.length ?? sampleCount(duration, fill);
     processor.process(
       inputs.map((input, i) => input?.data ?? new Float32Array(sampleCount(duration, rates[i]))),
       outputs,
+      0,
+      end,
     );
     return { status: { state: "ok", rates: outputRates }, outputs: outputs.map((data, i) => ({ rate: outputRates[i], data })) };
   } catch (error) {
@@ -306,12 +316,11 @@ function runLoop(component: readonly Node[], duration: number, signals: Readonly
   const chunk = Math.max(1, Math.min(...delays.map((k) => (processors[k] as DelayProcessor).latency)));
 
   try {
+    // Delays first: their output for this chunk only needs input from earlier chunks.
+    const steps = [...delays, ...order].map((k) => [processors[k], inputs[k], outputs[k]] as const);
     for (let start = 0; start < n; start += chunk) {
       const end = Math.min(n, start + chunk);
-      const span = (arrays: readonly Float32Array[]) => arrays.map((array) => array.subarray(start, end));
-      for (const k of delays) (processors[k] as DelayProcessor).pull(span(outputs[k]));
-      for (const k of order) processors[k].process(span(inputs[k]), span(outputs[k]));
-      for (const k of delays) (processors[k] as DelayProcessor).push(span(inputs[k]));
+      for (const [processor, input, out] of steps) processor.process(input, out, start, end);
     }
   } catch (error) {
     return fail(failed(error));
@@ -390,6 +399,6 @@ function failure(message: string): Outcome {
 }
 
 function failed(error: unknown): Outcome {
-  if (error instanceof RateError || error instanceof BudgetError) return failure(error.message);
-  return failure(`Simulation error: ${error instanceof Error ? error.message : String(error)}`);
+  const message = errorMessage(error);
+  return failure(EXPLAINED.has(errorName(error) ?? "") ? message : `Simulation error: ${message}`);
 }

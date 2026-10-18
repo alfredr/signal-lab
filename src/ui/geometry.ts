@@ -2,24 +2,27 @@
 
 import type { BlockType, PortSpec } from "../engine/block.ts";
 
-export interface Point {
+export type Point = {
   readonly x: number;
   readonly y: number;
-}
+};
 
 export type Side = "left" | "right" | "top" | "bottom";
 
-export interface PortPlace extends Point {
+export type PortPlace = Point & {
   readonly side: Side;
-}
+};
 
-export interface BlockLayout {
+export type BlockLayout = {
   readonly width: number;
   readonly height: number;
-  /** Port positions relative to the block's top-left corner. */
-  readonly inputs: readonly PortPlace[];
-  readonly outputs: readonly PortPlace[];
-}
+  /**
+   * Port positions relative to the block's top-left corner, by port index. Hidden ports, which
+   * the app wires itself, have no position.
+   */
+  readonly inputs: readonly (PortPlace | undefined)[];
+  readonly outputs: readonly (PortPlace | undefined)[];
+};
 
 /** Blocks snap to this grid. */
 export const GRID = 8;
@@ -34,24 +37,49 @@ export const snap = (value: number): number => Math.round(value / GRID) * GRID;
 const spread = (count: number, middle: number): number[] =>
   Array.from({ length: count }, (_, i) => middle + (i - (count - 1) / 2) * PITCH);
 
-export function layoutBlock(type: BlockType): BlockLayout {
+const layouts = new WeakMap<BlockType, BlockLayout>();
+
+export function layoutOf(type: BlockType): BlockLayout {
+  let layout = layouts.get(type);
+  if (!layout) layouts.set(type, (layout = layoutBlock(type)));
+  return layout;
+}
+
+function layoutBlock(type: BlockType): BlockLayout {
   const shape = type.shape?.kind ?? "box";
   const sideOf = (port: PortSpec) => port.side ?? "left";
-  const left = type.inputs.filter((port) => sideOf(port) === "left");
+  const visibleInputs = type.inputs.filter((port) => !port.hidden);
+  const visibleOutputs = type.outputs.filter((port) => !port.hidden);
+  const left = visibleInputs.filter((port) => sideOf(port) === "left");
 
   let width: number;
   let height: number;
-  if (shape === "circle") [width, height] = [48, 48];
-  else if (shape === "triangle") [width, height] = [64, 56];
-  else {
-    width = 144;
-    height = Math.max(56, Math.max(left.length, type.outputs.length) * PITCH + 16);
+  let portY: number | undefined;
+  switch (shape) {
+    case "circle":
+      [width, height] = [48, 48];
+      break;
+    case "triangle":
+      [width, height] = [64, 56];
+      break;
+    case "antenna":
+      // The mast's foot, where the wire meets it, is near the bottom.
+      [width, height, portY] = [48, 64, 56];
+      break;
+    case "terminal":
+      [width, height] = [80, 32];
+      break;
+    default:
+      width = 144;
+      height = Math.max(56, Math.max(left.length, visibleOutputs.length) * PITCH + 16);
   }
 
-  const leftY = spread(left.length, height / 2);
-  const topX = spread(type.inputs.filter((port) => sideOf(port) === "top").length, width / 2);
-  const bottomX = spread(type.inputs.filter((port) => sideOf(port) === "bottom").length, width / 2);
-  const inputs = type.inputs.map((port): PortPlace => {
+  const middle = portY ?? height / 2;
+  const leftY = spread(left.length, middle);
+  const topX = spread(visibleInputs.filter((port) => sideOf(port) === "top").length, width / 2);
+  const bottomX = spread(visibleInputs.filter((port) => sideOf(port) === "bottom").length, width / 2);
+  const inputs = type.inputs.map((port): PortPlace | undefined => {
+    if (port.hidden) return undefined;
     switch (sideOf(port)) {
       case "top":
         return { x: topX.shift()!, y: 0, side: "top" };
@@ -61,7 +89,8 @@ export function layoutBlock(type: BlockType): BlockLayout {
         return { x: 0, y: leftY.shift()!, side: "left" };
     }
   });
-  const outputs = spread(type.outputs.length, height / 2).map((y): PortPlace => ({ x: width, y, side: "right" }));
+  const rightY = spread(visibleOutputs.length, middle);
+  const outputs = type.outputs.map((port): PortPlace | undefined => (port.hidden ? undefined : { x: width, y: rightY.shift()!, side: "right" }));
   return { width, height, inputs, outputs };
 }
 

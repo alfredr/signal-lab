@@ -5,8 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Signal Lab</title>
 <meta name="description" content="Sketch block diagrams of radios and other signal chains, simulate them, and plot or listen anywhere along the way.">
+<link rel="stylesheet" href="vendor/Temml-Local.css">
 <link rel="stylesheet" href="style.css">
+<script src="vendor/temml.min.js" defer></script>
 <script type="module" src="js/main.js"></script>
+<!-- modulepreload -->
 </head>
 <body>
 <header class="topbar">
@@ -30,7 +33,9 @@
 </header>
 <main class="workspace">
   <nav class="palette" id="palette" aria-label="Blocks"></nav>
-  <section class="canvas" id="canvas" aria-label="Diagram"></section>
+  <section class="canvas" id="canvas" aria-label="Diagram">
+    <nav class="crumbs" id="crumbs" aria-label="Inside subsystem" hidden></nav>
+  </section>
   <aside class="inspector" id="inspector" aria-label="Settings"></aside>
   <section class="bench" id="bench" aria-label="Signals"></section>
 </main>

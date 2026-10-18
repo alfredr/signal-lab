@@ -5,13 +5,14 @@
 import { si, significant } from "../engine/format.ts";
 import { coerceParam, type ChoiceParam, type NumberParam, type ParamSpec, type ParamValue } from "../engine/params.ts";
 import { html } from "./dom.ts";
+import { richText } from "./math.ts";
 
 export type ChangeMode = "preview" | "commit";
 
-export interface Control {
+export type Control = {
   readonly element: HTMLElement;
   update(value: ParamValue): void;
-}
+};
 
 const PREFIXES: Record<string, number> = { G: 1e9, M: 1e6, k: 1e3, K: 1e3, m: 1e-3, u: 1e-6, "µ": 1e-6, "μ": 1e-6, n: 1e-9 };
 
@@ -60,7 +61,7 @@ let nextControlId = 0;
 function field(label: string, help: string | undefined, ...content: HTMLElement[]): { element: HTMLElement; id: string } {
   const id = `control-${++nextControlId}`;
   const element = html("div", { class: "control" }, html("label", { class: "control-label", for: id }, label), ...content);
-  if (help) element.append(html("p", { class: "control-help" }, help));
+  if (help) element.append(html("p", { class: "control-help" }, richText(help)));
   return { element, id };
 }
 
@@ -131,7 +132,7 @@ function choiceControl(spec: ChoiceParam, value: string, onChange: (value: strin
   });
   const group = html("div", { class: "segmented", role: "radiogroup", "aria-label": spec.label }, ...buttons.map((b) => b.label));
   const element = html("div", { class: "control" }, html("span", { class: "control-label" }, spec.label), group);
-  if (spec.help) element.append(html("p", { class: "control-help" }, spec.help));
+  if (spec.help) element.append(html("p", { class: "control-help" }, richText(spec.help)));
   return {
     element,
     update: (v) => {

@@ -1,9 +1,9 @@
 /** A sampled real signal. Sample k is the value at time k / rate seconds. */
-export interface Signal {
+export type Signal = {
   /** Samples per second. */
   readonly rate: number;
   readonly data: Float32Array;
-}
+};
 
 /**
  * How many samples a signal at `rate` holds over a window of `duration` seconds. Every wire

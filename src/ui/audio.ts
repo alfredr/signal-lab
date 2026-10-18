@@ -10,14 +10,14 @@ const LOWEST_RATE = 8000;
 const HIGHEST_RATE = 96000;
 const FADE_SECONDS = 0.03;
 
-interface Voice {
+type Voice = {
   readonly key: string;
   readonly data: Float32Array;
   readonly source: AudioBufferSourceNode;
   readonly gain: GainNode;
   readonly startedAt: number;
   readonly duration: number;
-}
+};
 
 /** The signal at a rate the browser can play: resampled by a whole factor if it is out of range. */
 function playable(signal: Signal): Signal {

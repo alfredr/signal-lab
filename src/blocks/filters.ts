@@ -6,7 +6,7 @@ import { bandpassSection, Biquads, butterworth } from "../dsp/biquad.ts";
 const order = choice({
   label: "Order",
   default: "4",
-  help: "Order 1 is a single RC stage; higher orders are Butterworth and roll off 6 dB per octave per order.",
+  help: String.raw`Order 1 is a single RC stage. Higher orders are Butterworth and fall $6n$ dB per octave for order $n$.`,
   options: [
     { value: "1", label: "1" },
     { value: "2", label: "2" },
@@ -20,7 +20,7 @@ export const lowpass = defineBlock({
   kind: "lowpass",
   label: "Low-pass",
   category: "Filters",
-  description: "Passes frequencies below the cutoff, where the gain is down 3 dB.",
+  description: String.raw`Passes frequencies below the cutoff $f_c$, where the gain is down 3 dB, to $1/\sqrt{2}$.`,
   inputs: [{ name: "in" }],
   outputs: [{ name: "out" }],
   params: {
@@ -30,7 +30,7 @@ export const lowpass = defineBlock({
   summary: (p) => `< ${si(p.cutoff, "Hz")}`,
   create(p, context) {
     const filter = new Biquads(butterworth("lowpass", Number(p.order), p.cutoff, context.outputRates[0]));
-    return { process: ([x], [y]) => filter.process(x, y) };
+    return { process: ([x], [y], start, end) => filter.process(x, y, start, end) };
   },
 });
 
@@ -48,7 +48,7 @@ export const highpass = defineBlock({
   summary: (p) => `> ${si(p.cutoff, "Hz")}`,
   create(p, context) {
     const filter = new Biquads(butterworth("highpass", Number(p.order), p.cutoff, context.outputRates[0]));
-    return { process: ([x], [y]) => filter.process(x, y) };
+    return { process: ([x], [y], start, end) => filter.process(x, y, start, end) };
   },
 });
 
@@ -56,8 +56,7 @@ export const bandpass = defineBlock({
   kind: "bandpass",
   label: "Band-pass",
   category: "Filters",
-  description:
-    "Tuned circuits. One section is a single LC resonator; more sections in cascade give steeper skirts for the same -3 dB bandwidth, like an IF strip.",
+  description: String.raw`Tuned circuits. One section is a single LC resonator, tuned to $f_0 = 1 / (2\pi\sqrt{LC})$; more sections in cascade give steeper skirts for the same $-3$ dB bandwidth, like an IF strip.`,
   inputs: [{ name: "in" }],
   outputs: [{ name: "out" }],
   params: {
@@ -71,6 +70,6 @@ export const bandpass = defineBlock({
     const each = p.bandwidth / Math.sqrt(2 ** (1 / p.sections) - 1);
     const section = bandpassSection(p.center, each, context.outputRates[0]);
     const filter = new Biquads(Array.from({ length: p.sections }, () => section));
-    return { process: ([x], [y]) => filter.process(x, y) };
+    return { process: ([x], [y], start, end) => filter.process(x, y, start, end) };
   },
 });

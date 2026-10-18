@@ -6,14 +6,14 @@ import { floorPowerOfTwo } from "../dsp/fft.ts";
 import { decibels, si, significant, toDecibels } from "../engine/format.ts";
 import type { Signal } from "../engine/signal.ts";
 
-export interface Theme {
+export type Theme = {
   readonly surface: string;
   readonly ink: string;
   readonly muted: string;
   readonly rule: string;
   readonly grid: string;
   readonly mono: string;
-}
+};
 
 export function readTheme(element: Element): Theme {
   const style = getComputedStyle(element);
@@ -22,12 +22,12 @@ export function readTheme(element: Element): Theme {
 }
 
 /** A visible span of the x axis: seconds for time plots, hertz for spectra. */
-export interface Range {
+export type Range = {
   readonly start: number;
   readonly end: number;
-}
+};
 
-interface Frame {
+type Frame = {
   readonly ctx: CanvasRenderingContext2D;
   readonly width: number;
   readonly height: number;
@@ -36,7 +36,7 @@ interface Frame {
   readonly top: number;
   readonly plotWidth: number;
   readonly plotHeight: number;
-}
+};
 
 /** Space around the data area for axis labels, in CSS pixels. */
 export const MARGIN = { left: 58, right: 12, top: 10, bottom: 24 } as const;

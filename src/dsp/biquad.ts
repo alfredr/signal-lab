@@ -1,13 +1,13 @@
 // IIR filters as cascades of second-order sections. Designs follow the RBJ audio-EQ cookbook
 // with coefficients normalized so a0 = 1; first-order sections are biquads with b2 = a2 = 0.
 
-export interface Section {
+export type Section = {
   readonly b0: number;
   readonly b1: number;
   readonly b2: number;
   readonly a1: number;
   readonly a2: number;
-}
+};
 
 /** Keeps a design frequency strictly inside (0, Nyquist). */
 function clampFrequency(frequency: number, rate: number): number {
@@ -81,15 +81,17 @@ export class Biquads {
     this.#state = new Float64Array(2 * sections.length);
   }
 
-  /** Filters `input` into `output`, which may be the same array. */
-  process(input: Float32Array, output: Float32Array): void {
-    if (input !== output) output.set(input);
+  /** Filters samples [start, end) of `input` into `output`, which may be the same array. */
+  process(input: Float32Array, output: Float32Array, start = 0, end = output.length): void {
+    if (this.#sections.length === 0 && input !== output) output.set(input.subarray(start, end), start);
     const state = this.#state;
     this.#sections.forEach(({ b0, b1, b2, a1, a2 }, k) => {
+      // The first section reads the input; the rest refine the output in place.
+      const source = k === 0 ? input : output;
       let s1 = state[2 * k];
       let s2 = state[2 * k + 1];
-      for (let i = 0; i < output.length; i++) {
-        const x = output[i];
+      for (let i = start; i < end; i++) {
+        const x = source[i];
         const y = b0 * x + s1;
         s1 = b1 * x - a1 * y + s2;
         s2 = b2 * x - a2 * y;

@@ -5,42 +5,42 @@
 import { portKey, type PortRef } from "../engine/circuit.ts";
 import { decibels, si, significant, toDecibels } from "../engine/format.ts";
 import { peak, power, type Signal } from "../engine/signal.ts";
-import { addProbe, removeProbe, setProbeView, type LabDocument, type ProbeView } from "./doc.ts";
+import { addProbe, removeProbe, setProbeView, type LabDocument, type ProbeView } from "../model/document.ts";
 import { html } from "./dom.ts";
 import type { ChangeMode } from "./controls.ts";
-import { portName } from "./inspector.ts";
+import { portLabel, probeColor } from "./labels.ts";
 import { drawSpectrum, drawTime, frequencySpan, MARGIN, readTheme, timeSpan, type Range } from "./plot.ts";
 
-export interface BenchModel {
+export type BenchModel = {
   readonly doc: LabDocument;
   readonly signals: ReadonlyMap<string, Signal>;
   /** The output port the scope shows, from the current selection. */
   readonly scope: PortRef | undefined;
   /** Key of the port being played, if any. */
   readonly playing: string | undefined;
-}
+};
 
-export interface BenchEvents {
+export type BenchEvents = {
   change(next: LabDocument, mode: ChangeMode): void;
   play(at: PortRef): void;
   stop(): void;
-}
+};
 
-interface PanelState {
+type PanelState = {
   readonly title: string;
   readonly signal: Signal | undefined;
   readonly view: ProbeView;
   /** CSS color for the trace. */
   readonly color: string;
   readonly playing: boolean;
-}
+};
 
-interface Scope {
+type Scope = {
   readonly panel: SignalPanel;
   readonly pin: HTMLButtonElement;
   view: ProbeView;
   at: PortRef | undefined;
-}
+};
 
 /** Canvas can't take var(--name) colors, so look them up. */
 function resolveColor(element: Element, color: string): string {
@@ -241,14 +241,14 @@ export class Bench {
     const { doc, signals, scope, playing } = model;
     const panels: HTMLElement[] = [];
 
-    if (scope && doc.blocks.some((b) => b.id === scope.block)) {
+    if (scope) {
       const scopePanel = this.#scopePanel();
       scopePanel.at = scope;
       const pinned = doc.probes.some((probe) => probe.at.block === scope.block && probe.at.port === scope.port);
       scopePanel.pin.textContent = pinned ? "Pinned" : "Pin";
       scopePanel.pin.disabled = pinned;
       scopePanel.panel.update({
-        title: portName(doc, scope),
+        title: portLabel(doc, scope),
         signal: signals.get(portKey(scope)),
         view: scopePanel.view,
         color: "var(--accent)",
@@ -272,10 +272,10 @@ export class Bench {
         this.#probes.set(probe.id, panel);
       }
       panel.update({
-        title: `${index + 1}. ${portName(doc, probe.at)}`,
+        title: `${index + 1}. ${portLabel(doc, probe.at)}`,
         signal: signals.get(portKey(probe.at)),
         view: probe.view,
-        color: `var(--probe-${(index % 6) + 1})`,
+        color: probeColor(index + 1),
         playing: playing === portKey(probe.at),
       });
       panels.push(panel.element);

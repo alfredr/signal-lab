@@ -158,6 +158,8 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
   text-align: left;
   cursor: grab;
 }
+/* Library subsystems: built from other blocks, which you can open up. */
+.palette-item.composite { border-style: dashed; }
 
 /* Diagram */
 
@@ -192,6 +194,68 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .wire.probed .wire-line { stroke: var(--probe); stroke-width: 2; }
 .wire.selected .wire-line { stroke: var(--accent); stroke-width: 2.6; }
 .wire-line.dragging { stroke: var(--accent); stroke-dasharray: 5 4; }
+/* The wire or marquee being dragged must never sit between the pointer and the port under it. */
+.overlay { pointer-events: none; }
+
+.block.selected .antenna { stroke: var(--accent); }
+.antenna { fill: none; stroke: var(--ink); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.waves { fill: none; stroke: var(--muted); stroke-width: 1.4; stroke-linecap: round; }
+.hit { fill: transparent; }
+.shape-terminal .body { fill: var(--accent-soft); stroke: var(--accent); }
+.shape-terminal .title { font: 600 11px var(--font-mono); }
+.body.stack { opacity: 0.6; }
+.marquee { fill: var(--accent); fill-opacity: 0.08; stroke: var(--accent); stroke-dasharray: 4 3; }
+
+.crumbs {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 20px);
+  padding: 4px 6px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  font: 500 12px var(--font-mono);
+}
+.crumb { padding: 3px 6px; border: 0; background: none; }
+.crumb.current { padding: 3px 6px; color: var(--ink); font-weight: 600; }
+.crumb-sep { color: var(--muted); }
+
+/* Context menu */
+
+.menu {
+  position: fixed;
+  z-index: 10;
+  min-width: 220px;
+  max-height: 70vh;
+  overflow: auto;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.25);
+}
+.menu-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  text-align: left;
+}
+.menu-item:hover:not(:disabled), .menu-item:focus-visible { background: var(--accent-soft); color: var(--accent); outline: none; }
+.menu-item.danger:hover:not(:disabled), .menu-item.danger:focus-visible { color: var(--warn); }
+.menu-hint { color: var(--muted); }
+.menu-heading { padding: 8px 10px 2px; font: 600 10px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.menu-separator { height: 1px; margin: 4px 6px; background: var(--rule); }
 
 /* Inspector */
 
@@ -233,6 +297,13 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .small { padding: 4px 8px; font-size: 11px; }
 .danger:hover:not(:disabled) { border-color: var(--warn); color: var(--warn); }
+
+.inner-params { margin: 0; padding: 8px 12px 12px; border: 1px solid var(--rule); border-radius: 8px; }
+.inner-params legend { padding: 0 4px; font: 600 11px var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.inner-block { display: flex; justify-content: space-between; align-items: center; font: 500 12px var(--font-mono); }
+
+math { font-size: 1.05em; }
+.notes math.tml-display, .description math.tml-display { margin: 0.4em 0; }
 
 .notes-block { display: grid; gap: 8px; }
 .notes-head { display: flex; justify-content: space-between; align-items: center; }

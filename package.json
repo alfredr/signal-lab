@@ -17,5 +17,8 @@
   "devDependencies": {
     "@types/node": "25.9.9",
     "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "temml": "0.13.5"
   }
 }

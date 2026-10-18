@@ -80,11 +80,12 @@ export class Fir {
     this.#history = new Float64Array(2 * taps.length);
   }
 
-  process(input: Float32Array, output: Float32Array): void {
+  /** Filters samples [start, end) of `input` into `output`. */
+  process(input: Float32Array, output: Float32Array, start = 0, end = output.length): void {
     const taps = this.#taps;
     const length = taps.length;
     const history = this.#history;
-    for (let i = 0; i < input.length; i++) {
+    for (let i = start; i < end; i++) {
       this.#position = (this.#position + length - 1) % length;
       history[this.#position] = input[i];
       history[this.#position + length] = input[i];
@@ -104,13 +105,14 @@ export class SampleDelay {
     this.#buffer = new Float32Array(samples);
   }
 
-  process(input: Float32Array, output: Float32Array): void {
+  /** Delays samples [start, end) of `input` into `output`. */
+  process(input: Float32Array, output: Float32Array, start = 0, end = output.length): void {
     const buffer = this.#buffer;
     if (buffer.length === 0) {
-      output.set(input);
+      output.set(input.subarray(start, end), start);
       return;
     }
-    for (let i = 0; i < input.length; i++) {
+    for (let i = start; i < end; i++) {
       const value = input[i];
       output[i] = buffer[this.#position];
       buffer[this.#position] = value;

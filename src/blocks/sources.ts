@@ -1,21 +1,28 @@
 import { defineBlock } from "../engine/block.ts";
 import { decibels, si, significant } from "../engine/format.ts";
 import { choice, number } from "../engine/params.ts";
-import { gaussian, mulberry32 } from "../engine/random.ts";
+import { seededNoise } from "../engine/random.ts";
 import { synthesizeVowel } from "../dsp/vowel.ts";
 
 const RATES = [8000, 12000, 16000, 24000, 48000, 96000, 192000, 384000, 768000, 1536000];
 
 /** Every source picks its own sample rate; blocks downstream inherit it. */
-function rate(fallback = 48000) {
+export function rate(fallback = 48000) {
   return number({ label: "Sample rate", unit: "Hz", default: fallback, min: 1000, max: 2_000_000, presets: RATES });
+}
+
+/** Standard deviation of white noise with `level` dB of power in `bandwidth` Hz, at `rate`. */
+export function noiseSigma(level: number, bandwidth: number, rate: number): number {
+  // Power P in bandwidth B is a density of P / B per Hz; white noise of variance sigma^2
+  // spreads that density from 0 to rate / 2.
+  return Math.sqrt((10 ** (level / 10) * (rate / 2)) / bandwidth);
 }
 
 export const oscillator = defineBlock({
   kind: "oscillator",
   label: "Oscillator",
   category: "Sources",
-  description: "A cosine wave, amplitude · cos(2πft + phase). Use it for a carrier, a local oscillator or a test tone.",
+  description: String.raw`A cosine wave, $A\cos(2\pi f t + \varphi)$. Use it for a carrier, a local oscillator or a test tone.`,
   inputs: [],
   outputs: [{ name: "out" }],
   shape: { kind: "circle", symbol: "~" },
@@ -29,11 +36,10 @@ export const oscillator = defineBlock({
   rates: (_, p) => [p.rate],
   create(p, context) {
     const step = (2 * Math.PI * p.frequency) / context.outputRates[0];
-    const start = (p.phase * Math.PI) / 180;
-    let n = 0;
+    const phase = (p.phase * Math.PI) / 180;
     return {
-      process(_, [out]) {
-        for (let i = 0; i < out.length; i++, n++) out[i] = p.amplitude * Math.cos(step * n + start);
+      process(_, [out], start, end) {
+        for (let i = start; i < end; i++) out[i] = p.amplitude * Math.cos(step * i + phase);
       },
     };
   },
@@ -43,7 +49,7 @@ export const voice = defineBlock({
   kind: "voice",
   label: "Voice",
   category: "Sources",
-  description: "A sung vowel, two syllables every 1.2 s. Its most negative peak is -1, so a modulation index of 1 just reaches zero in AM.",
+  description: String.raw`A sung vowel, two syllables every 1.2 s. It is scaled so its most negative peak is $-1$, so in AM a modulation index $\mu = 1$ just reaches zero.`,
   inputs: [],
   outputs: [{ name: "out" }],
   params: {
@@ -64,10 +70,9 @@ export const voice = defineBlock({
   rates: (_, p) => [p.rate],
   create(p, context) {
     const take = synthesizeVowel(p.vowel, p.pitch, p.bandwidth, context.outputRates[0]);
-    let n = 0;
     return {
-      process(_, [out]) {
-        for (let i = 0; i < out.length; i++, n++) out[i] = take[n % take.length];
+      process(_, [out], start, end) {
+        for (let i = start; i < end; i++) out[i] = take[i % take.length];
       },
     };
   },
@@ -77,12 +82,19 @@ export const noise = defineBlock({
   kind: "noise",
   label: "Noise",
   category: "Sources",
-  description:
-    "White Gaussian noise. Its level is the noise power inside a reference bandwidth, the way receivers quote SNR, so a setting means the same thing at any sample rate.",
+  description: String.raw`White Gaussian noise. Its level is the power $N_0 B$ it has in a reference bandwidth $B$, the way receivers quote SNR, so a setting means the same thing at any sample rate.`,
   inputs: [],
   outputs: [{ name: "out" }],
   params: {
-    level: number({ label: "Power", unit: "dB", default: -30, min: -120, max: 20, step: 0.5, help: "In the bandwidth below, relative to 1 (a sine of amplitude 1 has power 0.5, or -3 dB)." }),
+    level: number({
+      label: "Power",
+      unit: "dB",
+      default: -30,
+      min: -120,
+      max: 20,
+      step: 0.5,
+      help: String.raw`In the bandwidth below, relative to 1. A sine of amplitude 1 has power $\tfrac12$, or $-3$ dB.`,
+    }),
     bandwidth: number({ label: "Measured in", unit: "Hz", default: 2500, min: 1, max: 1_000_000, scale: "log" }),
     seed: number({ label: "Seed", default: 1, min: 1, max: 999, step: 1 }),
     rate: rate(),
@@ -90,13 +102,11 @@ export const noise = defineBlock({
   summary: (p) => `${decibels(p.level)} in ${si(p.bandwidth, "Hz")}`,
   rates: (_, p) => [p.rate],
   create(p, context) {
-    // Power P in bandwidth B is a density of P / B per Hz, and white noise of variance
-    // sigma^2 spreads that density over 0 to rate / 2.
-    const sigma = Math.sqrt((10 ** (p.level / 10) * (context.outputRates[0] / 2)) / p.bandwidth);
-    const normal = gaussian(mulberry32(context.seed ^ Math.imul(p.seed, 0x9e3779b1)));
+    const sigma = noiseSigma(p.level, p.bandwidth, context.outputRates[0]);
+    const normal = seededNoise(context.seed, p.seed);
     return {
-      process(_, [out]) {
-        for (let i = 0; i < out.length; i++) out[i] = sigma * normal();
+      process(_, [out], start, end) {
+        for (let i = start; i < end; i++) out[i] = sigma * normal();
       },
     };
   },
@@ -106,7 +116,7 @@ export const constant = defineBlock({
   kind: "constant",
   label: "DC",
   category: "Sources",
-  description: "A constant level. Added to a message, it is the carrier term in 1 + μm(t).",
+  description: String.raw`A constant level. Added to a message, it is the 1 in $1 + \mu\, m(t)$.`,
   inputs: [],
   outputs: [{ name: "out" }],
   params: {
@@ -117,8 +127,8 @@ export const constant = defineBlock({
   rates: (_, p) => [p.rate],
   create(p) {
     return {
-      process(_, [out]) {
-        out.fill(p.value);
+      process(_, [out], start, end) {
+        out.fill(p.value, start, end);
       },
     };
   },
@@ -128,7 +138,7 @@ export const sweep = defineBlock({
   kind: "sweep",
   label: "Sweep",
   category: "Sources",
-  description: "A tone gliding from one frequency to another over the whole window. Feed it to a filter and look at the spectrum to see the filter's shape.",
+  description: "A tone gliding from one frequency to another over the whole window. Feed it to a filter and the outline of the output traces the filter's frequency response.",
   inputs: [],
   outputs: [{ name: "out" }],
   params: {
@@ -156,10 +166,9 @@ export const sweep = defineBlock({
       p.spacing === "linear" || Math.abs(ratio - 1) < 1e-9
         ? (t: number) => 2 * Math.PI * (p.from * t + ((p.to - p.from) * t * t) / (2 * span))
         : (t: number) => ((2 * Math.PI * p.from * span) / Math.log(ratio)) * (ratio ** (t / span) - 1);
-    let n = 0;
     return {
-      process(_, [out]) {
-        for (let i = 0; i < out.length; i++, n++) out[i] = p.amplitude * Math.cos(phaseAt(n / rate));
+      process(_, [out], start, end) {
+        for (let i = start; i < end; i++) out[i] = p.amplitude * Math.cos(phaseAt(i / rate));
       },
     };
   },

@@ -1,6 +1,6 @@
 import { fft, isPowerOfTwo } from "./fft.ts";
 
-export interface Spectrum {
+export type Spectrum = {
   /** Bin spacing in Hz: bin k is centered on k * binWidth. */
   readonly binWidth: number;
   /**
@@ -8,7 +8,7 @@ export interface Spectrum {
    * at its peak, the sine's power, whatever the window or FFT size.
    */
   readonly power: Float64Array;
-}
+};
 
 /**
  * Averaged spectrum (Welch's method): Hann-windowed segments of `size` samples with 50%

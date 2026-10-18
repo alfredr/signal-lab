@@ -7,13 +7,13 @@ export type StoredParams = { readonly [name: string]: ParamValue };
 /** Units the inspector knows how to format. */
 export type Unit = "Hz" | "s" | "dB" | "deg" | "V" | "x";
 
-interface ParamBase {
+type ParamBase = {
   readonly label: string;
   /** A short note shown with the control. */
   readonly help?: string;
-}
+};
 
-export interface NumberParam extends ParamBase {
+export type NumberParam = ParamBase & {
   readonly type: "number";
   readonly default: number;
   readonly min: number;
@@ -25,23 +25,23 @@ export interface NumberParam extends ParamBase {
   readonly scale?: "linear" | "log";
   /** When present, the control is a menu of these values instead of a slider. */
   readonly presets?: readonly number[];
-}
+};
 
-export interface ChoiceOption<T extends string = string> {
+export type ChoiceOption<T extends string = string> = {
   readonly value: T;
   readonly label: string;
-}
+};
 
-export interface ChoiceParam<T extends string = string> extends ParamBase {
+export type ChoiceParam<T extends string = string> = ParamBase & {
   readonly type: "choice";
   readonly default: T;
   readonly options: readonly ChoiceOption<T>[];
-}
+};
 
-export interface BooleanParam extends ParamBase {
+export type BooleanParam = ParamBase & {
   readonly type: "boolean";
   readonly default: boolean;
-}
+};
 
 export type ParamSpec = NumberParam | ChoiceParam | BooleanParam;
 export type ParamSpecs = { readonly [name: string]: ParamSpec };

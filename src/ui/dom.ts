@@ -38,5 +38,7 @@ export function svg<K extends keyof SVGElementTagNameMap>(
 
 /** True when keyboard input is going to a text field rather than the app. */
 export function isTyping(target: EventTarget | null): boolean {
-  return target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName));
+  // A shape check: keyboard targets are elements, the window or the document.
+  const element = target as Partial<HTMLElement> | null;
+  return Boolean(element?.isContentEditable) || /^(INPUT|TEXTAREA|SELECT)$/.test(element?.tagName ?? "");
 }

@@ -32,6 +32,11 @@ export function decibels(value: number, digits = 3): string {
   return `${significant(value, digits)} dB`;
 }
 
+/** The amplitude ratio for a gain in dB. */
+export function amplitudeFromDecibels(db: number): number {
+  return 10 ** (db / 20);
+}
+
 /** Power ratio in dB, floored so silence reads as a number rather than minus infinity. */
 export function toDecibels(power: number, floor = -300): number {
   return power > 0 ? Math.max(floor, 10 * Math.log10(power)) : floor;
