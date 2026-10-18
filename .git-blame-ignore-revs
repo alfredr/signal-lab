@@ -1,0 +1,3 @@
+# Mechanical rewrites; git blame skips them (git config blame.ignoreRevsFile .git-blame-ignore-revs). GitHub reads this file itself.
+# Formatted with oxfmt, braces and blank lines added.
+b8405dd923e17a468ee1eecac442246d38dc1b8d
