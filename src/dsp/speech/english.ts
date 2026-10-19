@@ -1,8 +1,7 @@
-// English text to phonemes (ARPABET) for the formant voice. A word is looked up in the CMU
-// Pronouncing Dictionary when there is one to hand, and otherwise sounded out by the 1976 NRL
-// letter-to-sound rules in rules.ts. Numbers are read as words, and anything that mixes letters
-// and digits, such as a callsign (K1ABC) or a grid square (FN42), is spelled out, as is a short
-// word with no vowel (CQ). Punctuation makes pauses.
+// Converts English text to ARPABET phonemes. Uses the CMU Pronouncing
+// Dictionary when available, with NRL letter-to-sound rules as a fallback.
+// Expands numbers into words, spells alphanumeric identifiers and short
+// vowelless words, and converts punctuation to pauses.
 
 import { RULES } from './rules.ts';
 import type { Spoken } from './sequence.ts';
@@ -170,8 +169,8 @@ const CLASSES: Readonly<Record<string, string>> = {
 let compiled: ReadonlyMap<string, readonly Rule[]> | undefined;
 
 /**
- * The rules as regular expressions. A word is matched with the letter being
- * sounded out in lower case, which pins the rule's bracketed letters to it.
+ * Compiles rules to regular expressions. Lowercasing the current letter
+ * anchors the rule's bracketed pattern at that position.
  */
 function rules(): ReadonlyMap<string, readonly Rule[]> {
   compiled ??= new Map(

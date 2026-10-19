@@ -1,9 +1,7 @@
-// How the panel face is organized: panels, each a device of panes, each pane
-// some instruments that belong together. The document keeps the panels it has
-// been given; an instrument in none of them gets a pane of its own kind, or of
-// the subsystem it is in, so a new plot or knob shows at once. Every edit here
-// starts from the face as it shows, panes made up for the instruments
-// included, so what was shown is what gets moved.
+// Panel organization and responsive instrument layout. Unassigned instruments
+// get default panes grouped by subsystem or instrument kind. Edits materialize
+// those defaults while preserving saved entries for temporarily hidden
+// instruments.
 
 import { CONTROL, NOTE, BUTTON, READOUT } from '../blocks/instruments.ts';
 import {
@@ -17,7 +15,7 @@ import {
 import { faceCards, type FaceItem } from './instruments.ts';
 import { displayName } from './subsystems.ts';
 
-/** An instrument on the face, and the size it was given, if any. */
+/** A visible instrument with optional size overrides. */
 type FaceEntry = PaneItem & { readonly item: FaceItem };
 
 export type FacePane = {
@@ -32,7 +30,7 @@ export type FacePanel = {
   readonly panes: readonly FacePane[];
 };
 
-/** The kind of pane an instrument in none goes to, at the top level. */
+/** Default pane category for an unassigned top-level instrument. */
 function kindOf(item: FaceItem): {
   readonly key: string;
   readonly title: string;
@@ -50,7 +48,7 @@ function kindOf(item: FaceItem): {
   }
 }
 
-/** `base`, or `base` with a number after it, whichever `taken` lacks. */
+/** Reserves a unique id by appending a number to `base` when necessary. */
 function unique(base: string, taken: Set<string>): string {
   let id = base;
   for (let n = 2; taken.has(id); n++) {
@@ -62,10 +60,10 @@ function unique(base: string, taken: Set<string>): string {
 }
 
 /**
- * The face as it shows: the document's panels with the instruments that are
- * still there, each once, and after them panes for the instruments in none:
- * one for each subsystem they are in, and at the top level one for each kind.
- * With no panels of its own, the document gets one to hold them.
+ * Resolves the visible panels, showing each instrument once. Unassigned
+ * instruments get panes grouped by subsystem or, at the top level, by kind.
+ * These panes join the first panel; a document without panels gets one
+ * automatically.
  */
 export function facePanels(doc: LabDocument): FacePanel[] {
   const cards = new Map(faceCards(doc).map((item) => [item.id, item]));
@@ -94,7 +92,8 @@ export function facePanels(doc: LabDocument): FacePanel[] {
     })),
   }));
 
-  // The rest, by subsystem or by kind, in the order they come in.
+  // Group unassigned instruments by subsystem or kind, preserving document
+  // order.
   const extra = new Map<string, { title: string; entries: FaceEntry[] }>();
   for (const item of cards.values()) {
     if (placed.has(item.id)) {
@@ -139,10 +138,9 @@ export function facePanels(doc: LabDocument): FacePanel[] {
 }
 
 /**
- * The face as it shows, as the document would keep it. A pane of the
- * document's own keeps the instruments in it that the face leaves out for now,
- * such as a note taken off the face or a plot stacked under a view, with their
- * sizes, so arranging the rest doesn't lose them.
+ * Materializes the visible layout for editing. Existing panes retain hidden
+ * notes and stacked plots, including their saved sizes and positions in the
+ * item list.
  */
 function organized(doc: LabDocument): Panel[] {
   const own = new Map(
@@ -173,8 +171,8 @@ const ids = (panels: readonly Panel[]) =>
   new Set(panels.flatMap((p) => [p.id, ...p.panes.map((q) => q.id)]));
 
 /**
- * Moves an instrument to `index` among the instruments the pane `to` shows,
- * counted without it; those it doesn't show keep their places.
+ * Moves an instrument to visible position `index` in pane `to`, excluding the
+ * instrument itself from the count. Hidden entries remain in the list.
  */
 export function moveInstrument(
   doc: LabDocument,
@@ -202,7 +200,8 @@ export function moveInstrument(
           return { ...pane, items };
         }
 
-        // Before the one shown at `index`, or after them all.
+        // Insert before the visible item at `index`, or append if none
+        // remains.
         const next = items.filter((item) => shown.has(item.id))[index];
         const at = next ? items.indexOf(next) : items.length;
         return { ...pane, items: items.toSpliced(at, 0, entry) };
@@ -212,8 +211,8 @@ export function moveInstrument(
 }
 
 /**
- * Moves a pane to `index` among the panes of the panel `to`, counted without
- * it.
+ * Moves a pane to position `index` in panel `to`, excluding the moved pane
+ * from the count.
  */
 export function movePane(
   doc: LabDocument,
@@ -238,7 +237,7 @@ export function movePane(
   );
 }
 
-/** Adds an empty pane at the end of the panel `to`; returns its id too. */
+/** Appends an empty pane to panel `to` and returns its id. */
 export function addPane(
   doc: LabDocument,
   to: string,
@@ -265,7 +264,7 @@ export function addPane(
   ];
 }
 
-/** Adds a panel with one empty pane at the end; returns its id too. */
+/** Appends a panel containing one empty pane and returns the panel id. */
 export function addPanel(doc: LabDocument): [LabDocument, string] {
   const panels = organized(doc);
   const taken = ids(panels);
@@ -280,7 +279,7 @@ export function addPanel(doc: LabDocument): [LabDocument, string] {
   ];
 }
 
-/** Names a panel or a pane. */
+/** Updates a panel or pane title. */
 export function retitle(
   doc: LabDocument,
   id: string,
@@ -300,8 +299,9 @@ export function retitle(
 }
 
 /**
- * Takes a pane away, its instruments going to the pane before it in its panel,
- * or after it; with no other pane there, they get panes of their own again.
+ * Removes a pane and transfers its instruments to the previous pane, or the
+ * next if it was first. Without a neighboring pane, the instruments return to
+ * default panes.
  */
 export function removePane(doc: LabDocument, id: string): LabDocument {
   const panels = organized(doc);
@@ -330,9 +330,8 @@ export function removePane(doc: LabDocument, id: string): LabDocument {
 }
 
 /**
- * Takes a panel away, its panes going to the end of the panel before it, or
- * the start of the one after, all but those with nothing in them; the last
- * panel stays.
+ * Removes a panel and transfers its nonempty panes to the previous panel, or
+ * the next if it was first. The final panel cannot be removed.
  */
 export function removePanel(doc: LabDocument, id: string): LabDocument {
   const panels = organized(doc);
@@ -363,10 +362,13 @@ export function removePanel(doc: LabDocument, id: string): LabDocument {
   );
 }
 
-/** A size in whole grid cells, within what a document keeps. */
+/** Rounds and clamps a size to the supported range of grid cells. */
 const cells = (n: number) => Math.min(MOST_CELLS, Math.max(1, Math.round(n)));
 
-/** Gives an instrument a size in grid cells, or with none, its own size back. */
+/**
+ * Sets an instrument size in grid cells; `undefined` restores its default
+ * size.
+ */
 export function resizeInstrument(
   doc: LabDocument,
   id: string,
@@ -388,7 +390,7 @@ export function resizeInstrument(
   );
 }
 
-/** Moves a panel to `index` among the panels, counted without it. */
+/** Moves a panel to position `index`, excluding that panel from the count. */
 export function movePanel(
   doc: LabDocument,
   id: string,
@@ -404,25 +406,22 @@ export function movePanel(
     : doc;
 }
 
-// Laying out a pane. Its instruments fall in two kinds: screens (plots, views
-// and notes), which can take any size, and controls (knobs, buttons and
-// speakers, and the LCDs and readouts), which have their own. Screens go on
-// top and controls under them, or controls beside them when that makes the
-// pane shorter, as on the front of a radio. Each kind is laid out in rows, as
-// even as they can be, and each row fills the width: screens and displays
-// grow, and knobs spread out evenly rather than huddle in the middle.
+// Layout separates screens from controls. Screens sit above the controls or
+// beside them when that reduces the pane height. Each group uses balanced
+// rows. Screens and displays expand horizontally; knobs remain bounded in size
+// and use the remaining space between them.
 
-/** How an instrument takes to a pane: a screen, a display or a knob. */
+/** Sizing behavior: a flexible screen, a display, or a knob. */
 export type PieceKind = 'screen' | 'display' | 'knob';
 
-/** An instrument to lay out, at its own size in pixels. */
+/** An instrument with its preferred dimensions in pixels. */
 export type Piece = {
   readonly kind: PieceKind;
   readonly w: number;
   readonly h: number;
 };
 
-/** Where an instrument goes in its pane, in pixels from the top left. */
+/** An instrument rectangle relative to the pane origin, in pixels. */
 export type Box = {
   readonly x: number;
   readonly y: number;
@@ -433,18 +432,17 @@ export type Box = {
 /** The gap between instruments, and between screens and controls. */
 const GAP = 8;
 const ZONE_GAP = 14;
-/** The most a display grows across, against its own width. */
+/** Maximum display width as a multiple of its preferred width. */
 const DISPLAY_GROWTH = 2;
-/** How much taller a row of knobs can grow, against its own height. */
+/** Maximum fractional increase in a knob row's height. */
 const KNOB_GROWTH = 0.5;
-/** How far a screen can be stretched across before it looks wrong. */
+/** Screen width ratio above which the layout incurs a stretch penalty. */
 const SCREEN_STRETCH = 2.2;
 
 /**
- * Rows of `widths`, in order, none wider than `width` unless one alone is,
- * with as little room left over in each as can be: the sum of the squares of
- * what is left, so two half rows beat a full one and a lonely one. Of even
- * ways, the fuller rows come first.
+ * Partitions widths into ordered rows, minimizing squared unused space. A
+ * single oversized item may exceed the row width. Ties favor fuller earlier
+ * rows.
  */
 function rows(widths: readonly number[], width: number): number[][] {
   const n = widths.length;
@@ -478,11 +476,9 @@ function rows(widths: readonly number[], width: number): number[][] {
 }
 
 /**
- * Widths for a row that fill `width`: each grows in proportion to its own.
- * Beside knobs, a display grows to no more than twice its own, and what nobody
- * can take spreads the knobs out; a row of displays and screens alone fills
- * the width, so its edges line up with the rows around it. Too wide to fit,
- * they shrink in proportion.
+ * Distributes a row's available width in proportion to preferred widths.
+ * Displays beside knobs are capped at twice their preferred width. Any
+ * remaining space becomes gaps; oversized rows shrink proportionally.
  */
 function justify(
   pieces: readonly Piece[],
@@ -531,17 +527,17 @@ function justify(
   };
 }
 
-/** Pieces laid out in a zone `width` across: boxes from its top left. */
+/** A group of instrument boxes positioned within a zone of the given width. */
 type Zone = {
   readonly boxes: readonly Box[];
-  /** Each row's top and height, to spread them out later. */
+  /** Row geometry used when distributing extra height. */
   readonly rows: readonly {
     readonly top: number;
     readonly height: number;
     readonly members: readonly number[];
   }[];
   readonly height: number;
-  /** How much the screens are stretched across, past what looks right. */
+  /** Penalty for screens stretched beyond the preferred width ratio. */
   readonly strain: number;
 };
 
@@ -561,7 +557,7 @@ function zone(pieces: readonly Piece[], width: number): Zone {
     row.forEach((i, k) => {
       const piece = pieces[i]!;
       const w = widths[k]!;
-      // Screens take the row's height; the others sit on its floor.
+      // Screens fill the row height; other instruments align to the bottom.
       const h = piece.kind === 'screen' ? height : piece.h;
       boxes[i] = { x, y: top + height - h, w, h };
       x += w + gap;
@@ -578,10 +574,9 @@ function zone(pieces: readonly Piece[], width: number): Zone {
 }
 
 /**
- * A zone made `height` tall. Screens grow to take the extra, shared by row.
- * Without screens, rows of knobs grow first, by up to half again, so a pane
- * with room has bigger knobs rather than gaps; whatever is left spreads the
- * rows out evenly, with space above and below them too.
+ * Distributes extra height among rows. Screen rows expand to use it. Without
+ * screens, knob rows grow by at most 50%; remaining space becomes equal gaps
+ * above, between, and below rows.
  */
 function stretch(laid: Zone, pieces: readonly Piece[], height: number): Box[] {
   const extra = height - laid.height;
@@ -621,8 +616,9 @@ function stretch(laid: Zone, pieces: readonly Piece[], height: number): Box[] {
 }
 
 /**
- * Lays out a pane's instruments `width` across, and at least `height` tall.
- * Returns where each goes, in the order given, and the height it needs.
+ * Lays out instruments within `width`, using at least `height` when
+ * positioning them. Returns boxes in input order and the layout's natural
+ * height.
  */
 export function layoutPane(
   pieces: readonly Piece[],
@@ -674,7 +670,8 @@ export function layoutPane(
       score: natural + top.strain,
       natural,
       place: (total) => {
-        // The screens take any height to spare, or the controls spread out.
+        // Allocate spare height to screens, or to controls when there are no
+        // screens.
         const spare = Math.max(0, total - natural);
         const screensHeight = top.height + (screens.length ? spare : 0);
         return placeAll([
@@ -691,10 +688,10 @@ export function layoutPane(
     });
   }
 
-  // Controls beside the screens, as many to a row as each width allows.
+  // Also try layouts with controls beside the screens.
   if (screens.length && controls.length) {
-    // Beside controls, a screen keeps at least its own width; squeezed
-    // narrower, as on a phone, the controls go under it instead.
+    // Side-by-side layouts require screens to retain their preferred width.
+    // Otherwise, place controls below them.
     const narrowest = Math.max(...of(screens).map((p) => p.w));
     let across = -GAP;
     const tried = new Set<number>();
@@ -738,9 +735,9 @@ export function layoutPane(
 }
 
 /**
- * How wide a pane would like to be, between its widest instrument and
- * `widest`: the width that leaves least of it empty, without its being much
- * taller than wide.
+ * Chooses a preferred pane width that minimizes unused area and penalizes tall
+ * layouts. The search starts at the widest instrument and advances by `step`,
+ * up to `widest` when possible.
  */
 export function paneWidth(
   pieces: readonly Piece[],

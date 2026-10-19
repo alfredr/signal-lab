@@ -1,8 +1,6 @@
-// Screens that plot one port of the running stream: its latest stretch over
-// time, the spectrum of that stretch, or a waterfall that grows at the top as
-// time passes. Everything ends at the playhead. A face screen sits in a card
-// with a title, view buttons and Listen; its wheel zooms, dragging pans and a
-// double-click resets. A diagram screen is small and still.
+// Time, spectrum, and waterfall displays for a single output, synchronized to
+// the playhead. Panel displays support zoom, pan, and audio monitoring;
+// diagram displays use a compact noninteractive view.
 
 import { plot, type PlotView } from '../blocks/instruments.ts';
 import { decibels, si, significant, toDecibels } from '../engine/format.ts';
@@ -20,19 +18,19 @@ import {
 } from './plot.ts';
 import { onThemeChange } from './theme.ts';
 
-/** How much of the stream each view shows when a plot doesn't say. */
+/** Default history duration for each plot view, in seconds. */
 const SPANS: Record<PlotView, number> = {
   time: 0.05,
   spectrum: 0.25,
   waterfall: 10,
 };
 
-/** How a Plot block shows its signal. */
+/** Plot view and axis settings. */
 export type PlotSettings = {
   readonly view: PlotView;
   /**
-   * Seconds of the latest signal it shows: across a time plot, averaged in a
-   * spectrum, down a waterfall.
+   * History duration: horizontal time range, spectrum analysis window, or
+   * waterfall duration.
    */
   readonly span: number;
   /** Frequency range for spectra and waterfalls; 0 for high means Nyquist. */
@@ -42,7 +40,7 @@ export type PlotSettings = {
 
 const settingsCache = new WeakMap<StoredParams, PlotSettings>();
 
-/** A Plot block's settings, the same object for the same stored values. */
+/** Caches resolved plot settings by their stored parameter object. */
 export function plotSettings(params: StoredParams): PlotSettings {
   let settings = settingsCache.get(params);
   if (!settings) {
@@ -75,11 +73,11 @@ export type ScreenState = {
   readonly color: string;
   /** The playhead's time. */
   readonly time: number;
-  /** Why the port carries nothing, if it doesn't. */
+  /** Diagnostic for an unavailable signal. */
   readonly problem?: string;
 };
 
-/** Canvas can't take var(--name) colors, so look them up. */
+/** Resolves CSS custom properties to colors accepted by Canvas. */
 function resolveColor(element: Element, color: string): string {
   const name = /^var\((--[\w-]+)\)$/.exec(color)?.[1];
   return name
@@ -93,7 +91,7 @@ function latest(trace: Trace, time: number, span: number): Float32Array {
   return trace.read(end - Math.max(1, Math.round(span * trace.rate)), end);
 }
 
-/** The frequencies a screen shows before any zoom. */
+/** Default frequency bounds before zooming. */
 function band(state: ScreenState, rate: number): Range {
   const nyquist = rate / 2;
   const { low, high } = state.settings;
@@ -101,20 +99,17 @@ function band(state: ScreenState, rate: number): Range {
   return { start: Math.min(low, top * 0.99), end: top };
 }
 
-/**
- * Where a time plot's zoom puts it: `width` seconds, ending `back` before the
- * playhead.
- */
+/** Time window: `width` seconds, ending `back` seconds before the playhead. */
 type Window = { readonly width: number; readonly back: number };
 
 /**
- * The longest time plot that is triggered like an oscilloscope; anything
- * longer scrolls by as a strip chart.
+ * Maximum duration for triggered time plots. Longer views scroll with the
+ * playhead.
  */
 const TRIGGERED = 0.25;
 /** Where the trigger sits across a triggered plot. */
 const PRE = 0.1;
-/** Points a triggered trace is compared at, to keep it lined up frame to frame. */
+/** Sample count for matching triggered traces between frames. */
 const SHAPE = 128;
 /** How long a scale holds before it shrinks to fit, in milliseconds. */
 const HOLD = 2500;
@@ -136,8 +131,8 @@ function roundUp(x: number): number {
 }
 
 /**
- * A scale that grows at once to take in more and shrinks only once what it
- * shows has stayed smaller for a while, so axes don't jump about.
+ * Axis limit that expands immediately and contracts only after a hold
+ * interval, reducing visual jitter.
  */
 export class Held {
   #value: number | undefined;
@@ -161,7 +156,7 @@ export class Held {
   }
 }
 
-/** A time plot's visible seconds, and the time its axis counts from. */
+/** Visible time range and axis origin. */
 type TimeView = { readonly range: Range; readonly origin: number };
 
 /** A canvas plotting one port. */
@@ -174,19 +169,19 @@ export class Screen {
   /** A time plot's zoom, and a spectrum's or waterfall's frequency range. */
   #window: Window | undefined;
   #band: Range | undefined;
-  /** What the zoom was set against, to tell when it no longer applies. */
+  /** Signal and settings signature used to invalidate zoom state. */
   #extent = '';
   /** A time plot's vertical scale, above and below 0, and a spectrum's top. */
   readonly #high = new Held();
   readonly #low = new Held();
   readonly #ceiling = new Held();
-  /** The triggered trace last shown, normalized, to line the next one up with. */
+  /** Normalized previous trace used for trigger matching. */
   #shape: Float64Array | undefined;
   /** Pointer position over the plot, in canvas pixels. */
   #hover: { x: number; y: number } | undefined;
   #frame = 0;
 
-  /** Drawn again when the colors change; theme.ts holds it only weakly. */
+  /** Strong reference to the callback registered weakly by theme.ts. */
   readonly #redraw = () => this.#schedule();
 
   constructor({ interactive }: { readonly interactive: boolean }) {
@@ -256,10 +251,9 @@ export class Screen {
   }
 
   /**
-   * What a time plot shows. A short one is triggered like an oscilloscope: it
-   * waits for a rising crossing and starts there, so a repeating waveform
-   * stands still, and its axis counts from that crossing. A long one, or one
-   * panned back, ends where it is put and counts back from the playhead.
+   * Selects a time range and axis origin. Short live traces trigger on rising
+   * crossings; longer or panned traces use a fixed window relative to the
+   * playhead.
    */
   #timeView(state: ScreenState, trace: Trace): TimeView {
     const { width, back } = this.#zoom(state);
@@ -268,8 +262,7 @@ export class Screen {
       return { range: { start: t - back - width, end: t - back }, origin: t };
     }
 
-    // With nothing to trigger on, it runs free on the same timebase, as a
-    // scope's auto trigger does, so the axis doesn't change under the trace.
+    // Without a crossing, use the same timebase in free-running mode.
     const at = this.#trigger(trace, t, width) ?? t - (1 - PRE) * width;
     return {
       range: { start: at - PRE * width, end: at + (1 - PRE) * width },
@@ -278,12 +271,11 @@ export class Screen {
   }
 
   /**
-   * The time of a rising crossing to start a triggered trace from: one late
-   * enough to be recent and early enough for the trace to fit before `t`. The
-   * level is halfway between the extremes, with some hysteresis against noise.
-   * Of the crossings, the one whose trace looks most like the last one shown
-   * wins, so a waveform that crosses several times a period doesn't hop
-   * between them. Undefined if nothing crosses, and the plot runs free.
+   * Finds a recent rising crossing with room for a complete trace before `t`.
+   * Uses a midrange threshold and hysteresis to reject noise. Prefers the
+   * crossing whose normalized trace best matches the previous frame,
+   * preventing jumps between crossings within one period. Returns undefined
+   * when no crossing is available.
    */
   #trigger(trace: Trace, t: number, width: number): number | undefined {
     const { rate } = trace;
@@ -326,7 +318,8 @@ export class Screen {
       return undefined;
     }
 
-    // The trace from crossing `c` at SHAPE points, its mean taken out, scaled to 1.
+    // Samples SHAPE points after crossing `c`, removes the mean, and
+    // normalizes amplitude.
     const shapeAt = (c: number): Float64Array => {
       const shape = new Float64Array(SHAPE);
       let mean = 0;
@@ -380,7 +373,8 @@ export class Screen {
       return;
     }
 
-    // No closer than a few samples across, no wider or further back than it holds.
+    // Constrain zoom and pan to available history, with a minimum width of a
+    // few samples.
     const held = (trace.end - trace.start) / trace.rate;
     const width = Math.min(held, Math.max(8 / trace.rate, window.width));
     const back = Math.min(Math.max(0, held - width), Math.max(0, window.back));
@@ -415,7 +409,7 @@ export class Screen {
     const plotFraction = (x: number) =>
       Math.min(1, Math.max(0, (x - MARGIN.left) / plotWidth()));
 
-    // Zooming about a point and panning, for whichever axis the view has.
+    // Handles pointer-centered zoom and axis panning.
     const zoom = (fraction: number, factor: number) => {
       const state = this.#state;
       if (!state?.trace) {
@@ -589,8 +583,8 @@ export class Screen {
   }
 
   /**
-   * The vertical range for the samples on screen: round numbers above and
-   * below 0, each growing at once and shrinking only after a while.
+   * Chooses rounded vertical bounds around zero, with immediate expansion and
+   * delayed contraction.
    */
   #scale(data: Float32Array): Range {
     let low = 0;
@@ -626,10 +620,7 @@ export class SignalPanel {
     { type: 'button', class: 'small play' },
     'Listen',
   );
-  /**
-   * When the measurements were last written, so they change slowly enough to
-   * read.
-   */
+  /** Last measurement update, used to throttle changing labels. */
   #measured = {
     at: 0,
     time: Number.NaN,
@@ -658,8 +649,8 @@ export class SignalPanel {
       waterfall: viewButton('waterfall', 'Waterfall'),
     };
     this.#listen.addEventListener('click', () => actions.listen());
-    // A header with the name and Listen, over a screen with its views and
-    // measurements along the top.
+    // Place the title and Listen control above the view selector and
+    // measurements.
     this.element = html(
       'section',
       { class: 'signal-panel' },

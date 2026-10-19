@@ -1,6 +1,6 @@
-// Inspector controls generated from parameter specs. Each control reports edits through
-// `onChange` (as a preview while a slider moves, a commit when it is released) and can be
-// updated in place when the value changes elsewhere, such as on undo.
+// Inspector inputs generated from parameter specifications. Changes emit
+// preview or commit events; external updates modify existing controls in
+// place.
 
 import { si, significant } from '../engine/format.ts';
 import {
@@ -87,11 +87,11 @@ function fromPosition(spec: NumberParam, position: number): number {
   ) as number;
 }
 
-/** Where `value` sits along the control's travel, from 0 to 1. */
+/** Maps a value to its normalized control position in [0, 1]. */
 export const toFraction = (spec: NumberParam, value: number): number =>
   toPosition(spec, value) / SLIDER_STEPS;
 
-/** The value at a point along the control's travel, from 0 to 1. */
+/** Maps a normalized control position in [0, 1] to a value. */
 export const fromFraction = (spec: NumberParam, fraction: number): number =>
   fromPosition(
     spec,

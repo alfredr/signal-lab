@@ -1,5 +1,5 @@
-// The lab document: a diagram, possibly containing subsystems, plus title, notes and the
-// layout of its panel face. Documents are immutable; every edit returns a new one, which keeps undo trivial.
+// Immutable document model: nested diagrams, parameters, notes, and panel
+// organization. Edit functions return new documents for undo and redo.
 
 import { INPUT_TERMINAL, OUTPUT_TERMINAL } from '../blocks/terminals.ts';
 import type { BlockNode, PortRef, Wire } from '../engine/circuit.ts';
@@ -7,8 +7,7 @@ import type { ParamValue, StoredParams, Unit } from '../engine/params.ts';
 import { isParameterName } from './expressions.ts';
 import { freeNames, renameUses } from './scopes.ts';
 
-// Instrument kinds, as in blocks/instruments.ts, which the model can't import
-// without pulling in the block library.
+// Keep these kind names local to avoid importing the full block library.
 const PLOT_KIND = 'plot';
 const CONTROL_KIND = 'control';
 const READOUT_KIND = 'readout';
@@ -30,8 +29,8 @@ export type LabBlock = BlockNode & {
 };
 
 /**
- * A named number that blocks in this diagram, and in subsystems inside it, can
- * use in their bindings. A subsystem's parameters are also its settings.
+ * A named numeric parameter available to this diagram and its descendants. A
+ * subsystem also exposes its parameters as block settings.
  */
 export type Parameter = {
   readonly name: string;
@@ -45,29 +44,26 @@ export type Parameter = {
 export type Diagram = {
   readonly blocks: readonly LabBlock[];
   readonly wires: readonly Wire[];
-  /** Notes about this diagram, in the Markdown of markdown.ts. */
+  /** Diagram notes using the Markdown syntax supported by markdown.ts. */
   readonly notes?: string;
   readonly parameters?: readonly Parameter[];
 };
 
-/**
- * An instrument in a pane, by full id, with its size in grid cells if it has
- * been given one rather than its own.
- */
+/** An instrument's full id and optional grid-size overrides within a pane. */
 export type PaneItem = {
   readonly id: string;
   readonly w?: number;
   readonly h?: number;
 };
 
-/** Instruments on the panel face that belong together, under a title. */
+/** A titled group of panel instruments. */
 type Pane = {
   readonly id: string;
   readonly title: string;
   readonly items: readonly PaneItem[];
 };
 
-/** Panes that make one device on the panel face. */
+/** A titled collection of panes. */
 export type Panel = {
   readonly id: string;
   readonly title: string;
@@ -79,28 +75,23 @@ export type LabDocument = Diagram & {
   readonly title: string;
   readonly notes: string;
   /**
-   * How the panel face is organized: panels of panes of instruments. Those in
-   * no pane get panes of their own, and where everything goes on screen is
-   * worked out to fit the space there is.
+   * Saved panel and pane membership. Unassigned instruments receive default
+   * panes; screen positions are calculated from the available space.
    */
   readonly panels?: readonly Panel[];
 };
 
-/** Subsystem ids leading from the top-level diagram down to one inside it. */
+/** Subsystem ids from the document root to a nested diagram. */
 export type Path = readonly string[];
 
-/**
- * A block's id from the top of the document: the path and its own id joined
- * with "/".
- */
+/** Joins a diagram path and local block id into a full id. */
 export function pathId(path: Path, id: string): string {
   return [...path, id].join('/');
 }
 
 /**
- * The full id of the block that `ref` names from the diagram at `path`. An
- * instrument refers to blocks by such paths: down into subsystems by their
- * ids, and out of the subsystem it is in by "..".
+ * Resolves an instrument's block reference relative to `path`. Subsystem ids
+ * descend into diagrams; leading ".." segments ascend to parent diagrams.
  */
 export function resolveRef(path: Path, ref: string): string | undefined {
   const parts = ref.split('/');
@@ -110,7 +101,7 @@ export function resolveRef(path: Path, ref: string): string | undefined {
     : pathId(path.slice(0, path.length - up), parts.slice(up).join('/'));
 }
 
-/** How the diagram at `path` refers to the block with full id `id`. */
+/** Builds a reference from diagram `path` to full block id `id`. */
 function relativeRef(path: Path, id: string): string {
   const parts = id.split('/');
   let shared = 0;
@@ -134,7 +125,7 @@ export function isSubsystem(
   return block.kind === SUBSYSTEM && block.inner !== undefined;
 }
 
-/** A subsystem's terminals, in the order that numbers its ports. */
+/** Input and output terminals in port-number order. */
 export function terminals(inner: Diagram): {
   inputs: LabBlock[];
   outputs: LabBlock[];
@@ -173,10 +164,7 @@ export function nextId(
   return `${prefix}${highest + 1}`;
 }
 
-/**
- * Hands out ids with `prefix` that don't collide with `existing` or with each
- * other.
- */
+/** Generates ids that are unique against `existing` and previous results. */
 export function idSource(
   prefix: string,
   existing: readonly { readonly id: string }[],
@@ -213,9 +201,8 @@ export function blockAt(
 }
 
 /**
- * Where each old port of a subsystem went after its inside changed: terminals
- * are matched by id, so adding or removing one renumbers the others rather
- * than shifting outside wires onto the wrong port.
+ * Maps old subsystem ports to new indices by terminal id. Adding or removing
+ * terminals must not redirect existing wires to different terminals.
  */
 function portMoves(
   before: readonly LabBlock[],
@@ -362,12 +349,10 @@ export function removeBlocks<D extends Diagram>(
 }
 
 /**
- * Copies the blocks `ids`, and the wires among them, offset by (dx, dy) with
- * fresh ids. Returns the copies' ids. A subsystem's inside is shared, which is
- * safe because documents are never changed in place, unless instruments in it
- * need pointing elsewhere: a copied instrument, at any depth, acts on the copy
- * of what it acted on, if that was copied too. `path` is where the diagram
- * sits, for references that leave it.
+ * Duplicates selected blocks and their connecting wires with fresh ids and an
+ * (dx, dy) offset. Returns the new block ids. Nested diagrams are shared
+ * unless their instrument references need updating. References follow copied
+ * targets at any depth; `path` resolves references outside this diagram.
  */
 export function duplicate<D extends Diagram>(
   diagram: D,
@@ -380,7 +365,7 @@ export function duplicate<D extends Diagram>(
   const blockId = idSource('b', diagram.blocks);
   const wireId = idSource('w', diagram.wires);
   const renamed = new Map(chosen.map((block) => [block.id, blockId()]));
-  // A block's full id in the copy: a copied block's, or one inside it, or the same.
+  // Map selected blocks and their descendants to copied full ids.
   const prefix = path.length ? `${path.join('/')}/` : '';
   const copied = (id: string) => {
     const [head, ...rest] = id.startsWith(prefix)
@@ -418,7 +403,7 @@ export function duplicate<D extends Diagram>(
   ];
 }
 
-/** Binds a block's setting to an expression, or unbinds it given none. */
+/** Sets a binding expression, or removes the binding when none is supplied. */
 export function setBinding<D extends Diagram>(
   diagram: D,
   id: string,
@@ -434,7 +419,7 @@ export function setBinding<D extends Diagram>(
   });
 }
 
-/** A parameter name based on `base` that isn't taken in the diagram. */
+/** Finds an unused parameter name derived from `base`. */
 export function freeParameterName(diagram: Diagram, base: string): string {
   const stem =
     base.replace(/[^A-Za-z0-9_]+/g, '_').replace(/^(?=\d)/, '_') || 'p';
@@ -483,7 +468,7 @@ export function removeParameter<D extends Diagram>(
   };
 }
 
-/** Renames a parameter, and points what uses it at the new name. */
+/** Renames a parameter and its uses in this scope. */
 export function renameParameter<D extends Diagram>(
   diagram: D,
   from: string,
@@ -496,11 +481,9 @@ export function renameParameter<D extends Diagram>(
 }
 
 /**
- * Why parameter `from` of the diagram at `path` can't be renamed `to`, if it
- * can't: each name has to go on meaning what it meant. So `to` mustn't be
- * declared here already, nor used here from a diagram further out, which the
- * renamed parameter would hide; and no subsystem inside that uses `from` may
- * have a `to` of its own, which would take its place there.
+ * Returns a reason the rename would change name resolution. Rejects duplicate
+ * declarations, capture of inherited names, and descendant declarations that
+ * would shadow the renamed parameter.
  */
 export function renameProblem(
   doc: LabDocument,
@@ -583,11 +566,7 @@ export function removeWire<D extends Diagram>(diagram: D, id: string): D {
   return { ...diagram, wires: diagram.wires.filter((wire) => wire.id !== id) };
 }
 
-/**
- * What an instrument refers to: the block a readout or a Bits to tones view
- * reads, or the block whose setting a control sets, as a path relative to the
- * instrument's own diagram.
- */
+/** Extracts an instrument's block reference relative to its containing diagram. */
 function instrumentRef(block: LabBlock): string | undefined {
   const { params } = block;
   if (READS_BLOCK.has(block.kind) && typeof params.block === 'string') {
@@ -618,10 +597,9 @@ function withInstrumentRef(block: LabBlock, ref: string): LabBlock {
 }
 
 /**
- * A copied block, which sits in the diagram at `from` and whose copy, `id`,
- * sits in the diagram at `to`, with what instruments refer to, its own and
- * those inside it, pointed at the copies of copied blocks. `copied` gives a
- * block's full id in the copy.
+ * Rewrites references in a duplicated block and its descendants. `from` and
+ * `to` are the original and destination diagram paths; `copied` maps full ids
+ * to their destinations.
  */
 function withCopiedRefs(
   block: LabBlock,
@@ -669,17 +647,16 @@ export function everyBlock(
   ]);
 }
 
-/** A parameter, by the diagram that declares it. */
+/** A parameter identified by its declaring diagram. */
 type ParameterRef = {
   readonly scope: Path;
   readonly parameter: string;
 };
 
 /**
- * What an instrument refers to, worked out from where it sits: a block, by
- * full id, that a readout or a Bits to tones view reads or whose setting a
- * control sets; or a parameter that a control sets, by name or as a
- * subsystem's setting.
+ * A resolved instrument target: a block and optional setting, or a parameter
+ * in its declaring scope. Controls may refer to parameters directly or through
+ * subsystem settings.
  */
 type Reference =
   | { readonly block: string; readonly setting?: string }
@@ -706,7 +683,7 @@ export function referenceOf(
 
   const dot = target.lastIndexOf('.');
   if (dot <= 0) {
-    // The nearest diagram declaring it.
+    // Find the nearest declaration in the scope chain.
     for (let depth = path.length; depth >= 0; depth--) {
       const scope = path.slice(0, depth);
       if (diagramAt(doc, scope)?.parameters?.some((p) => p.name === target)) {
@@ -732,9 +709,9 @@ export function referenceOf(
 }
 
 /**
- * How an instrument in the diagram at `path` refers to `reference`: a
- * parameter by name where that finds it, or else as its subsystem's setting.
- * Undefined for a top-level parameter hidden by one of the same name.
+ * Formats a resolved reference for an instrument at `path`. Parameters use a
+ * bare name when visible, otherwise a subsystem setting reference. Returns
+ * undefined when a root parameter is shadowed and cannot be addressed.
  */
 function referenceText(
   doc: LabDocument,
@@ -768,12 +745,10 @@ function referenceText(
 }
 
 /**
- * Follows blocks and parameters that moved, from `before` to `after`: the face
- * layout, and what instruments refer to, wherever they are. `rename` gives a
- * block's new full id, or undefined if it is gone. A parameter goes with the
- * subsystem it belongs to, unless `parameter`, given where that would take it,
- * says otherwise: where it went, or undefined if it is gone. An instrument
- * left referring to nothing is cleared.
+ * Updates instrument references and panel membership after a structural edit.
+ * `rename` maps old full ids to new ids, returning undefined for removed
+ * blocks. Parameters follow their declaring subsystems unless the optional
+ * callback remaps them. References to removed targets are cleared.
  */
 export function moveRefs(
   before: LabDocument,
@@ -845,7 +820,7 @@ export function moveRefs(
   return panels ? { ...next, panels } : next;
 }
 
-/** Takes instruments that are gone out of their panes. */
+/** Removes deleted instruments from saved panes. */
 export function pruneRefs(doc: LabDocument): LabDocument {
   let changed = false;
   const panels = doc.panels?.map((panel) => ({
@@ -874,7 +849,7 @@ export function renameParameterAt(
   to: string,
 ): LabDocument {
   let next = updateDiagramAt(doc, path, (d) => renameParameter(d, from, to));
-  // A subsystem's parameters are its settings, so its binding follows this one.
+  // Rename the binding key on the subsystem that exposes this parameter.
   if (path.length) {
     next = updateDiagramAt(next, path.slice(0, -1), (d) =>
       updateBlock(d, path[path.length - 1]!, (block) =>
@@ -893,7 +868,7 @@ export function renameParameterAt(
     );
   }
 
-  // And so do controls on it, wherever they are.
+  // Update controls targeting the parameter throughout the document.
   const here = path.join('/');
   return moveRefs(
     doc,
@@ -925,7 +900,7 @@ export function setSettings(
   return { ...doc, ...change };
 }
 
-// Reading documents back from storage or a file, trusting nothing about their shape.
+// Validate documents read from browser storage or JSON files.
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -942,10 +917,10 @@ function readRef(value: unknown): PortRef | undefined {
   return { block: value.block, port: Math.trunc(value.port) };
 }
 
-/** The most grid cells an instrument can be across or down. */
+/** Maximum instrument width or height in grid cells. */
 export const MOST_CELLS = 40;
 
-/** A size in grid cells, if it is one. */
+/** Parses a supported grid dimension. */
 function readCells(value: unknown): number | undefined {
   return isNumber(value) && value >= 1 && value <= MOST_CELLS
     ? Math.round(value)
@@ -953,12 +928,12 @@ function readCells(value: unknown): number | undefined {
 }
 
 /**
- * Panels of panes of instruments. Documents saved with the face as a grid of
- * spots have none, and their instruments are given panes as they load.
+ * Reads panel organization. Legacy documents with grid-based face layouts have
+ * no saved panels and use automatically generated panes.
  */
 function readPanels(value: unknown): Pick<LabDocument, 'panels'> {
   const ids = new Set<string>();
-  // Panels and panes each need an id of their own.
+  // Require unique ids across panels and panes.
   const fresh = (id: unknown): id is string => {
     if (!isString(id) || id === '' || ids.has(id)) {
       return false;
@@ -1006,10 +981,7 @@ function readPanels(value: unknown): Pick<LabDocument, 'panels'> {
   return panels.length ? { panels } : {};
 }
 
-/**
- * Documents saved before instruments pinned signals to the bench as probes;
- * each becomes a Plot block wired to the same output.
- */
+/** Migrates legacy probes to Plot blocks connected to the same outputs. */
 function plotsFromProbes(doc: LabDocument, probes: unknown): LabDocument {
   let next = doc;
   let k = 0;
@@ -1110,10 +1082,7 @@ function readParameters(value: unknown): Pick<Diagram, 'parameters'> {
   return parameters.length ? { parameters } : {};
 }
 
-/**
- * Kinds that have been renamed, by their old names: transmit and receive
- * antennas became one Antenna, which does whatever it is wired to do.
- */
+/** Map legacy transmit and receive antenna kinds to the unified Antenna block. */
 const RENAMED: Readonly<Record<string, string>> = {
   'antenna-tx': 'antenna',
   'antenna-rx': 'antenna',
@@ -1176,10 +1145,7 @@ function readDiagram(value: Record<string, unknown>, depth: number): Diagram {
   };
 }
 
-/**
- * Validates a parsed JSON value as a document. Throws with a readable message
- * if it isn't one.
- */
+/** Validates parsed JSON and returns a document, or throws a descriptive error. */
 export function readDocument(value: unknown): LabDocument {
   if (!isRecord(value) || value.format !== FORMAT) {
     throw new Error("This file isn't a Signal Lab diagram.");

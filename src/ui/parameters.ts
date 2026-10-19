@@ -1,5 +1,4 @@
-// Inspector pieces for parameters: a number setting that can be bound to an
-// expression, and the editable list of a diagram's parameters.
+// Inspector controls for expression bindings and editable diagram parameters.
 
 import type { NumberParam, Unit } from '../engine/params.ts';
 import type { Parameter } from '../model/document.ts';
@@ -14,17 +13,14 @@ import {
 import { html } from './dom.ts';
 import { showMenu, type MenuItem } from './menu.ts';
 
-/**
- * Adding a Control for a setting or parameter, which puts it on the panel
- * face.
- */
+/** Actions for adding a panel Control to a setting or parameter. */
 export type PanelHook = {
-  /** Whether it has one already. */
+  /** Whether a matching Control already exists. */
   readonly added: () => boolean;
   readonly add: () => void;
 };
 
-/** A menu item that adds something, unless it is there already. */
+/** An add action disabled when the corresponding item already exists. */
 export function addOnce(
   label: string,
   added: boolean,
@@ -49,14 +45,14 @@ export type Bindable = {
   };
   setValue(value: number, mode: ChangeMode): void;
   setBinding(expression: string | undefined): void;
-  /** Turns the setting into a parameter of its diagram, bound to it. */
+  /** Creates a diagram parameter and binds this setting to it. */
   expose?(): void;
   readonly panel?: PanelHook;
 };
 
 /**
- * A number setting with an ƒ button. Bound, it shows its expression and the
- * value worked out from it in place of the slider.
+ * Numeric setting with an expression-binding menu. Bound settings show the
+ * expression and evaluated value instead of a slider.
  */
 export function bindableControl(bindable: Bindable): {
   element: HTMLElement;
@@ -99,7 +95,7 @@ export function bindableControl(bindable: Bindable): {
     row,
     button,
   );
-  /** Showing the expression field before anything is bound. */
+  /** Whether an unbound expression field is currently being edited. */
   let editing = false;
 
   const sync = () => {
@@ -185,20 +181,20 @@ export type ParameterListEvents = {
   read(): readonly Parameter[];
   setValue(name: string, value: number, mode: ChangeMode): void;
   add(): void;
-  /** Applies an edit, or says why it can't be made. */
+  /** Applies an edit or returns a validation error. */
   edit(name: string, next: Parameter): string | undefined;
   remove(name: string): void;
   panel(name: string): PanelHook;
   /**
-   * Inside a subsystem, a binding on the subsystem block outside that sets
-   * this parameter, overriding its own value.
+   * Binding on the enclosing subsystem block that overrides this parameter's
+   * stored value.
    */
   outside?(name: string): OutsideBinding | undefined;
-  /** Shows the subsystem block outside, where its bindings are edited. */
+  /** Navigates to the enclosing subsystem block to edit its binding. */
   showOutside?(): void;
 };
 
-/** A binding outside that sets a parameter, and what it works out to. */
+/** An external parameter binding and its evaluated value. */
 type OutsideBinding = {
   readonly expression: string;
   readonly value: number | undefined;
@@ -305,7 +301,7 @@ function editForm(
   );
 }
 
-/** A diagram's parameters: a control for each, editable, plus a way to add one. */
+/** Editable controls for a diagram's parameters, with an action to add more. */
 export function parameterList(events: ParameterListEvents): {
   element: HTMLElement;
   sync(): void;

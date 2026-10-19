@@ -1,7 +1,6 @@
-// Recordings on the page: decoded from files or the microphone, kept in this
-// browser's IndexedDB (they are too big for localStorage), and packed into a
-// saved diagram so it travels with its sound. Each is one channel, scaled so
-// its loudest peak is 1.
+// Decodes audio files and microphone recordings, stores them in IndexedDB, and
+// embeds them in exported documents. Recordings are mixed to mono and
+// peak-normalized.
 
 export type Clip = {
   readonly id: string;
@@ -81,9 +80,8 @@ const newId = () =>
   `clip-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
 /**
- * A recording from encoded audio (WAV, MP3, M4A, Ogg, WebM: whatever the
- * browser decodes), mixed to one channel, cut to `LONGEST` seconds and scaled
- * to a peak of 1.
+ * Decodes a browser-supported audio file, mixes it to mono, truncates it to
+ * `LONGEST` seconds, and normalizes its peak to 1.
  */
 export async function decodeClip(
   bytes: ArrayBuffer,

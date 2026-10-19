@@ -15,14 +15,14 @@ export type Category =
   | 'Instruments';
 
 /**
- * A value a block measures as the stream runs: a power, an SNR, a decoded
- * message, the symbol being sent. Readings show on the block, in the inspector
- * and on readouts, as they stood at the playhead.
+ * A measurement reported by a running block, such as power, SNR, or decoded
+ * text. The diagram, inspector, and readouts display readings at the playhead
+ * time.
  */
 export type Reading = {
   readonly label: string;
   readonly value: number | string;
-  /** How to show a number. */
+  /** Display unit for numeric values. */
   readonly unit?: 'dB' | 'Hz' | 's' | 'x';
 };
 
@@ -31,11 +31,11 @@ export type PortSpec = {
   /** Where an input sits on the block. Outputs are always on the right. */
   readonly side?: 'left' | 'top' | 'bottom';
   /**
-   * Wired by the app rather than the user, and not drawn: an antenna's link to
-   * the air, or a subsystem terminal's link to the outside.
+   * An internal port connected by the model and omitted from the diagram, such
+   * as an antenna's air connection or a subsystem terminal's external link.
    */
   readonly hidden?: boolean;
-  /** The block works without it, as a recording plays without a trigger. */
+  /** Whether the block can run without this input connected. */
   readonly optional?: boolean;
 };
 
@@ -54,18 +54,16 @@ type Shape =
     };
 
 /**
- * A running instance of a block. It is causal and keeps its own state from one
- * chunk of the stream to the next. Every array holds one chunk, the same
- * stretch of time on every port at that port's rate, so index i is the same
- * instant on every port at one rate. The stream asks for consecutive spans
- * [start, end) of each chunk: all of it at once for a block outside any
- * feedback loop, short spans for blocks inside one.
+ * A causal block processor with state retained between chunks. Each array
+ * covers the same time interval at its port's sample rate. Equal-rate ports
+ * share sample indices. The scheduler requests consecutive [start, end) spans:
+ * whole chunks outside feedback loops and shorter spans inside them.
  */
 export type Processor<P = never> = {
   /**
-   * Computes samples [start, end) of every output from inputs up to `end`. A
-   * block that changes the sample rate never sits in a loop, so it always gets
-   * whole chunks, which hold different numbers of samples on each side.
+   * Writes output samples in [start, end), reading only available inputs
+   * before `end`. Rate-changing blocks are excluded from feedback loops and
+   * receive whole chunks, with different input and output sample counts.
    */
   process(
     inputs: readonly Float32Array[],
@@ -73,33 +71,31 @@ export type Processor<P = never> = {
     start: number,
     end: number,
   ): void;
-  /** What the block has measured so far, asked for after every chunk. */
+  /** Reports measurements after each chunk. */
   readings?(): readonly Reading[];
   /**
-   * Takes new settings in place, keeping its state, the way turning a knob
-   * leaves a circuit's capacitors charged. Returns false if it can't, and the
-   * block is built afresh.
+   * Applies new settings while preserving processor state. Returning false
+   * requests a new processor.
    */
   update?(params: P): boolean;
   /**
-   * A push from outside the stream, such as a button pressed on the face. It
-   * takes effect from the next chunk.
+   * Handles an external trigger, such as a panel button, starting with the
+   * next chunk.
    */
   press?(): void;
 };
 
 /**
- * A processor whose output at sample i depends only on inputs up to sample i -
- * latency (latency >= 1). That lag is what lets it close a feedback loop: the
- * stream steps a loop in spans no longer than its shortest latency and runs
- * the delays first in each span, when the inputs they need are already in the
- * arrays from earlier spans, or kept from earlier chunks.
+ * A processor whose output at sample i uses inputs no later than i - latency,
+ * with latency >= 1. Feedback loops run in spans bounded by their shortest
+ * delay. Delay processors run first, reading earlier spans or retained samples
+ * from previous chunks.
  */
 export type DelayProcessor<P = never> = Processor<P> & {
   readonly latency: number;
   /**
-   * The chunk is done and `inputs` hold all `length` of its samples: keep the
-   * last `latency` of them for the start of the next one.
+   * Retains input samples needed for the next chunk. Called after all `length`
+   * samples have been processed.
    */
   keep(inputs: readonly Float32Array[], length: number): void;
 };
@@ -122,11 +118,11 @@ type BuildContext = {
   readonly inputRates: readonly number[];
   readonly outputRates: readonly number[];
   /**
-   * Where the stream is when the block starts, in seconds: 0 at the start, or
-   * later for a block built afresh as the stream runs.
+   * Stream time when the processor is created, in seconds. This may be nonzero
+   * when rebuilding during playback.
    */
   readonly time: number;
-  /** Stable for a given block, for anything random. */
+  /** Stable per-block seed for deterministic randomness. */
   readonly seed: number;
 };
 
@@ -139,12 +135,12 @@ export type BlockType<S extends ParamSpecs = ParamSpecs> = {
   readonly inputs: readonly PortSpec[];
   readonly outputs: readonly PortSpec[];
   readonly params: S;
-  /** Labels of the readings it reports as it runs, for readouts to show. */
+  /** Available reading labels for readout selection. */
   readonly reports?: readonly string[];
   /**
-   * The readings its block shows on the diagram: the first of `labels` it has,
-   * or all it has of them side by side if `together`. Without it, the first
-   * reading.
+   * Reading labels to display on the diagram. Shows the first available label,
+   * or all available labels when `together` is true. Defaults to the first
+   * reported reading.
    */
   readonly glance?: {
     readonly labels: readonly string[];
@@ -154,8 +150,8 @@ export type BlockType<S extends ParamSpecs = ParamSpecs> = {
   /** Short text drawn on the block, such as "4.5 kHz". */
   summary?(params: ParamValues<S>): string;
   /**
-   * How far its output runs behind its input, in seconds, at output rate
-   * `rate`: for lining up drawings of the signals either side of it.
+   * Output delay in seconds at sample rate `rate`, used to align related
+   * signal views.
    */
   lag?(params: ParamValues<S>, rate: number): number;
   /**
@@ -191,17 +187,14 @@ export function defineBlock<const S extends ParamSpecs>(
 }
 
 /**
- * Thrown by a block that can't run as set up, such as an FT8 message that
- * can't be encoded. Its message is shown as is.
+ * A configuration error with a user-facing message, such as an unsupported FT8
+ * message.
  */
 export class BlockError extends Error {
   override readonly name = 'BlockError';
 }
 
-/**
- * Thrown by `rates` when a block's inputs don't fit together. Its message is
- * shown as is.
- */
+/** A sample-rate incompatibility with a user-facing message. */
 export class RateError extends Error {
   override readonly name = 'RateError';
 }

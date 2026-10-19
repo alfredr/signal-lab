@@ -1,6 +1,6 @@
-// Subsystems: blocks that contain a diagram. Their ports come from the Input and Output
-// terminals inside. Grouping turns a selection into a subsystem, rewiring whatever crossed the
-// selection's edge through new terminals; ungrouping splices a subsystem's contents back out.
+// Subsystem structure and editing. Internal Input and Output terminals define
+// external ports. Grouping inserts terminals for crossing wires; ungrouping
+// reconnects the contained blocks directly.
 
 import { blockType } from '../blocks/index.ts';
 import { INPUT_TERMINAL, OUTPUT_TERMINAL } from '../blocks/terminals.ts';
@@ -27,7 +27,7 @@ import { declaredWithin, freeNames, freshName, renameUses } from './scopes.ts';
 const subsystemTypes = new WeakMap<Diagram, BlockType>();
 
 /**
- * A block's type: its registered type, or one made up from a subsystem's
+ * Returns a registered block type or derives a subsystem type from its
  * terminals.
  */
 export function typeOf(block: LabBlock): BlockType | undefined {
@@ -78,10 +78,9 @@ export type Outside = {
 };
 
 /**
- * What `terminal`, inside the subsystem at `path`, is wired to outside: the
- * block at the far end of each wire, followed on out through the terminals of
- * any subsystems around it. Each copy of a subsystem is wired on its own, so
- * this is for the copy that `path` leads to.
+ * Finds external endpoints connected to a terminal in the subsystem at `path`,
+ * following enclosing subsystem terminals as needed. Resolution is specific to
+ * this subsystem instance.
  */
 export function wiredOutside(
   doc: LabDocument,
@@ -131,10 +130,9 @@ export function wiredOutside(
 }
 
 /**
- * Moves the blocks `ids` into a new subsystem in their place. Each outside
- * output feeding the selection gets an Input terminal, and each selected
- * output feeding the outside gets an Output terminal. Terminals themselves
- * stay where they are.
+ * Groups selected blocks into a subsystem. Each external source gets an Input
+ * terminal; each selected output used outside gets an Output terminal.
+ * Existing terminal blocks remain in the parent diagram.
  */
 function group<D extends Diagram>(
   diagram: D,
@@ -244,10 +242,10 @@ function group<D extends Diagram>(
 }
 
 /**
- * Replaces a subsystem with its contents, placed where it stood. Wires that
- * ran through its terminals are joined up directly, around any loop through it
- * too. Returns the new id of every block that came out. `visible` holds the
- * parameter names declared in the diagrams around this one.
+ * Replaces a subsystem with its contents at the same location and reconnects
+ * terminal wires, including feedback paths. Returns moved block ids and
+ * promoted parameter names. `visible` contains parameter names from enclosing
+ * scopes.
  */
 function ungroup<D extends Diagram>(
   diagram: D,
@@ -266,12 +264,10 @@ function ungroup<D extends Diagram>(
     return undefined;
   }
 
-  // The subsystem's parameters come out with it, each name still meaning what
-  // it meant. One bound outside gives way to its expression, which means the
-  // same out here; a subsystem further in that used it gets a parameter of
-  // its own, bound to that expression from out here. The others join this
-  // diagram's, under a new name where theirs would hide a name in use here,
-  // or a name further in would hide theirs.
+  // Promote unbound parameters, renaming them to avoid capture in either
+  // direction. Replace bound parameters with their parent-scope expressions.
+  // Descendant subsystems that use a bound parameter receive a local
+  // declaration bound at their boundary, preserving expression scope.
   const bound = block.bindings ?? {};
   const avoid = new Set([
     ...visible,
@@ -300,8 +296,8 @@ function ungroup<D extends Diagram>(
     kept.set(parameter.name, name);
   }
 
-  // Subsystems further in that use a bound parameter declare it themselves,
-  // so the expression stops at their edge.
+  // Keep substituted expressions outside descendant scopes by binding a local
+  // parameter at each boundary.
   const handedTo = new Map<string, typeof handed>();
   const prepared = block.inner.blocks.map((b) => {
     if (!b.inner) {
@@ -384,8 +380,8 @@ function ungroup<D extends Diagram>(
     port: ref.port,
   });
 
-  // What feeds input `k` once the subsystem is gone. A wire from one of its
-  // own outputs, around a loop, comes from whatever fed that output inside.
+  // Resolve input `k` after removal. Self-feedback wires resolve through the
+  // internal source of the corresponding output.
   const sourcesOf = (k: number, seen: ReadonlySet<number>): PortRef[] =>
     seen.has(k)
       ? []
@@ -403,8 +399,8 @@ function ungroup<D extends Diagram>(
                       : sourcesOf(through, new Set([...seen, k]));
                   }),
           );
-  // What output `j` feeds outside. Wires back into the subsystem itself are
-  // made from the input side.
+  // Find external targets of output `j`. Reconstruct self-feedback wires from
+  // their input endpoints.
   const targetsOf = (j: number): PortRef[] =>
     diagram.wires
       .filter(
@@ -418,7 +414,7 @@ function ungroup<D extends Diagram>(
   for (const wire of inner.wires) {
     const fromInput = inputIndex.get(wire.from.block);
     const toOutput = outputIndex.get(wire.to.block);
-    // Every source a wire inside starts from, and every target it ends at, seen from outside.
+    // Resolve internal wire endpoints in the parent diagram.
     const froms =
       fromInput !== undefined
         ? sourcesOf(fromInput, new Set())
@@ -460,8 +456,8 @@ function ungroup<D extends Diagram>(
 }
 
 /**
- * Groups blocks of the diagram at `path`, keeping their face spots and what
- * instruments refer to.
+ * Groups blocks at `path`, preserving panel membership and instrument
+ * references.
  */
 export function groupAt(
   doc: LabDocument,
@@ -502,8 +498,8 @@ export function groupAt(
 }
 
 /**
- * Ungroups a subsystem in the diagram at `path`, keeping the face spots and
- * instrument references of the blocks that came out.
+ * Ungroups a subsystem at `path`, preserving panel membership and instrument
+ * references.
  */
 export function ungroupAt(
   doc: LabDocument,
@@ -512,7 +508,7 @@ export function ungroupAt(
 ): LabDocument {
   let renamed: ReadonlyMap<string, string> | undefined;
   let parameters: ReadonlyMap<string, string> = new Map();
-  // The names declared around the diagram it is in.
+  // Collect parameter names from enclosing diagrams.
   const visible = new Set(
     path.flatMap(
       (_, depth) =>
@@ -555,8 +551,9 @@ export function ungroupAt(
         ? undefined
         : pathId(path, [fresh, ...rest].join('/'));
     },
-    // Its own parameters join the diagram it was in, but those bound from
-    // there are gone, and what set them has nothing left to set.
+    // Unbound parameters move to the parent diagram. Bound parameters become
+    // expressions, so controls targeting their removed declarations are
+    // cleared.
     (was, followed) => {
       if (was.scope.join('/') !== holder) {
         return followed;

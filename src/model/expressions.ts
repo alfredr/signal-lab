@@ -1,7 +1,7 @@
-// Expressions that bind a block's setting to parameters: `fc`, `-3 - snr`,
-// `1 / (2 * pi * sqrt(L * C))`. Numbers, names, + - * / ^, parentheses and a
-// few functions. Parsed here rather than handed to eval, which the site's
-// Content-Security-Policy forbids anyway.
+// Parses numeric binding expressions with parameter names, arithmetic,
+// parentheses, and built-in functions. Examples include `fc`, `-3 - snr`, and
+// `1 / (2 * pi * sqrt(L * C))`. Evaluation uses the parser rather than eval
+// and works under the site's Content Security Policy.
 
 export type Expression =
   | { readonly kind: 'number'; readonly value: number }
@@ -213,9 +213,9 @@ export function parseExpression(text: string): Outcome<Expression> {
 }
 
 /**
- * `text` with each name in `renames` replaced, all at once, by what it maps
- * to: another name, or an expression in parentheses. Only whole names change,
- * never part of a longer one or of a number such as 1e5.
+ * Simultaneously replaces complete identifiers using `renames`. Replacements
+ * may be names or parenthesized expressions. Preserves substrings of longer
+ * identifiers and numeric exponents such as 1e5.
  */
 export function renameIn(
   text: string,

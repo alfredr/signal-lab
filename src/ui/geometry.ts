@@ -1,4 +1,4 @@
-// Where blocks and their ports sit on the diagram, and how wires route between them.
+// Block dimensions, port positions, and wire routing.
 
 import type { BlockType, PortSpec } from '../engine/block.ts';
 import { hasIcon } from './drawings.ts';
@@ -29,12 +29,12 @@ export type BlockLayout = {
 const GRID = 8;
 /** Spacing between ports along a side. */
 const PITCH = 24;
-/** How far a wire runs straight out of a port before it turns. */
+/** Straight wire segment before the first bend. */
 const STUB = 16;
 
 export const snap = (value: number): number => Math.round(value / GRID) * GRID;
 
-/** How the diagram draws a block: its own shape, or a schematic symbol. */
+/** A block's declared shape or its schematic symbol. */
 export type Drawing =
   | NonNullable<BlockType['shape']>
   | { readonly kind: 'symbol' };
@@ -43,12 +43,10 @@ export type Drawing =
 export const SYMBOL = 56;
 
 /**
- * How a block is drawn. A plain block with a drawing of its own, one input on
- * its left and one output at most (an input above or below has a side of its
- * own), is drawn as that drawing in a square, as on a schematic, its name
- * above and its settings below. It keeps a box's footprint and ports, leads
- * running out to them, so diagrams laid out with boxes still line up. One with
- * more ports keeps a box, which has room for their names along its sides.
+ * Uses a schematic symbol for box-shaped blocks with an icon, at most one left
+ * input, and at most one output. Top and bottom inputs are separate. The
+ * original footprint and port positions are preserved so existing diagrams
+ * remain aligned; blocks with more ports retain labeled boxes.
  */
 export function drawingOf(type: BlockType): Drawing {
   const shape = type.shape ?? { kind: 'box' };
@@ -98,7 +96,7 @@ function layoutBlock(type: BlockType): BlockLayout {
       [width, height] = [64, 56];
       break;
     case 'antenna':
-      // The mast's foot, where the wire meets it, is near the bottom.
+      // Place the antenna connection near the foot of the mast.
       [width, height, portY] = [48, 64, 56];
       break;
     case 'terminal':
@@ -159,7 +157,8 @@ export function route(from: Point, to: PortPlace): Point[] {
       return [from, { x: middle, y: from.y }, { x: middle, y: to.y }, to];
     }
 
-    // Backwards: cross over in the gap just above or below the target's row, or go under both.
+    // For a backward connection, route above or below the target row, or
+    // beneath both blocks.
     const y =
       to.y - from.y > 100
         ? to.y - 48

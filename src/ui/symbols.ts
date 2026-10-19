@@ -1,9 +1,7 @@
-// The Bits to tones view: an FT8 symbol mapper's last few symbols side by
-// side, a column each. A row of what each symbol carries (its three coded bits
-// and the tone the Gray code picks for them), the mapper's tone out, the glide
-// the Gaussian filter after it makes of the steps, and any time plots stacked
-// under it. It scrolls with the playhead, now at the right, and each label
-// rides along in its column, kept in view as the column comes and goes.
+// Displays recent FT8 symbols in time-aligned columns: coded bit groups,
+// Gray-coded tones, Gaussian-filtered frequency, and stacked traces. The view
+// follows the playhead and keeps labels visible as columns enter and leave the
+// viewport.
 
 import {
   bitCell,
@@ -237,8 +235,8 @@ export class SymbolView {
       right: Math.min(right, x(column.to)),
     });
 
-    // Text in a column, centred, but kept inside the part in view as the
-    // column scrolls in or out; the short form, or nothing, where it won't fit.
+    // Centers a label within the visible part of a symbol column, using
+    // abbreviated text or omitting it when space is limited.
     const label = (
       column: Column,
       texts: readonly string[],

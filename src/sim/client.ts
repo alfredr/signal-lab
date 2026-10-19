@@ -1,7 +1,6 @@
-// The page's side of the simulation worker. Documents and watched ports go over
-// as they change; advances go one at a time, so the stream never runs further
-// ahead than the page asked for, and a load or reset never waits behind a
-// queue of them.
+// Browser client for the simulation worker. Sends document and watch-list
+// changes immediately, with at most one advance request in flight so loads and
+// resets are not blocked by queued simulation work.
 
 import type { BlockStatus } from '../engine/simulator.ts';
 import type { LabDocument } from '../model/document.ts';

@@ -1,9 +1,8 @@
-// Sample-rate changes by whole-number factors: polyphase filtering with a Kaiser-windowed
-// low-pass at the higher rate. Both directions are causal and work a chunk at a time, keeping
-// the inputs their filter still reaches. They delay the signal by half the filter length, as a
-// real resampler would; raising the rate costs one more input sample, so that a chunk's outputs
-// never need an input from the next chunk. The Interpolator at the end reads a signal at any
-// fractional position instead, for the speaker, filtered for the rate it is read at.
+// Integer-factor resampling using polyphase Kaiser-windowed low-pass filters.
+// Both directions retain filter history across chunks and introduce
+// half-filter-length delay. Upsampling adds one input sample of latency to
+// avoid reading the next chunk. Interpolator provides bandlimited reads at
+// fractional positions for audio playback.
 
 import { kaiserBeta, kaiserLength, lowpassTaps } from './fir.ts';
 
@@ -36,8 +35,8 @@ export function resamplerDelay(
 }
 
 /**
- * The inputs a resampler has seen, the latest `kept` of them carried over from
- * chunk to chunk: `work[i]` is input number `first + i` in the stream.
+ * Retains the latest `kept` input samples between chunks. `work[i]`
+ * corresponds to absolute sample `first + i`.
  */
 class Inputs {
   readonly #kept: number;
@@ -74,9 +73,8 @@ class Inputs {
 }
 
 /**
- * Raises the rate by `factor`: zero-stuffing then interpolation, computed one
- * phase at a time. `first` and `next` say where the stream is when it starts:
- * the numbers of the first input it will get and of the first output.
+ * Upsamples by `factor` using polyphase interpolation. `first` and `next`
+ * specify the initial absolute input and output sample indices.
  */
 export class Upsampler {
   readonly #factor: number;
@@ -233,17 +231,15 @@ export function resampleTo(
 const RESOLUTION = 512;
 
 /**
- * How much wider than a sinc at the signal's own rate the kernel spreads: by
- * the ratio when reading sparser than the signal's rate, so its cutoff falls
- * to 90% of half the rate it is read at.
+ * Widens the sinc kernel for downsampling, placing its cutoff at 90% of the
+ * destination Nyquist frequency.
  */
 const stretch = (ratio: number) => Math.max(1, ratio) / 0.9;
 
 /**
- * Reads a signal at any fractional sample position through a Blackman-windowed
- * sinc, cut off below half the rate it is read at. Reading a signal sparser
- * than its own rate, as a speaker at a lower rate or a tape played fast does,
- * then folds nothing above that back down.
+ * Reads fractional sample positions through a Blackman-windowed sinc. The
+ * cutoff follows the destination rate to suppress aliasing during downsampling
+ * or faster playback.
  */
 export class Interpolator {
   /** Zero crossings of the sinc each side. */

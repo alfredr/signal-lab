@@ -50,10 +50,9 @@ export const grayTone = (b0: number, b1: number, b2: number): number =>
 export const costasTone = (s: number): number => COSTAS[(s % 36) % 7]!;
 
 /**
- * Where coded bit `k` passes between the stages that make it, as a stretch of
- * time from the start of the transmission, in seconds: a third of a symbol
- * each, one symbol before the symbol that carries it, so the symbol mapper has
- * all three bits of a symbol as that symbol begins.
+ * Returns the transmission-relative time interval for coded bit `k`. Each bit
+ * lasts one third of a symbol and is sent one symbol ahead, making all three
+ * bits available when their mapped tone begins.
  */
 export function bitCell(k: number): {
   readonly from: number;
@@ -114,10 +113,9 @@ function erf(x: number): number {
 }
 
 /**
- * When each tone is sent, `length` samples at `rate` of it: the tone (0 to 7)
- * held for each symbol from `start` seconds in, and a key that is 1 while the
- * transmission is on, with raised-cosine ramps an eighth of a symbol long at
- * each end so it doesn't click.
+ * Generates `length` samples of symbol tones and a transmission key at `rate`,
+ * beginning at `start` seconds. The key uses raised-cosine ramps lasting one
+ * eighth of a symbol to reduce clicks.
  */
 export function schedule(
   tones: readonly number[],
@@ -145,10 +143,9 @@ export function schedule(
 }
 
 /**
- * FT8 audio of `length` samples at `rate`, as WSJT-X makes it: tone 0 at
- * `offset` Hz, starting `start` seconds in, each step in frequency smoothed by
- * a Gaussian with BT = 2 (GFSK), and the phase added up from the frequency so
- * it never jumps, with short ramps at each end.
+ * Generates FT8 audio with tone 0 at `offset` Hz, starting at `start` seconds.
+ * Applies BT = 2 Gaussian frequency smoothing, continuous phase integration,
+ * and short amplitude ramps.
  */
 export function synthesize(
   tones: readonly number[],
@@ -281,9 +278,8 @@ type Sync = {
 };
 
 /**
- * The time and frequency whose Costas arrays (those starting at the symbols in
- * `arrays`) stand out most from the other tones, trying starts up to
- * `lastStart` frames in.
+ * Finds the strongest Costas match in time and frequency, using sync arrays
+ * indexed by `arrays` and start frames up to `lastStart`.
  */
 function search(
   spec: Spectrogram,
@@ -334,9 +330,9 @@ export type Lock = {
 };
 
 /**
- * Looks for an FT8 signal in the start of a slot, using the Costas arrays that
- * have arrived so far. Undefined until the first one has, or if nothing stands
- * out.
+ * Searches the available Costas arrays near the start of a slot. Returns
+ * undefined before the first array is complete or when no match is strong
+ * enough.
  */
 export function acquire(
   audio: Float32Array,
@@ -415,9 +411,10 @@ export function dataBit(s: number): number | undefined {
 }
 
 /**
- * Searches `audio` for the strongest FT8 signal between `low` and `high` Hz
- * and decodes it: resample to 6400 Hz, spectrogram of symbol-long frames every
- * eighth of a symbol, find the best Costas match, then soft-decision LDPC.
+ * Searches `audio` between `low` and `high` Hz for the strongest FT8 signal.
+ * Resamples to 6400 Hz, builds symbol-length FFT frames at one-eighth-symbol
+ * intervals, locates the best Costas match, and performs soft-decision LDPC
+ * decoding.
  */
 export function decode(
   audio: Float32Array,

@@ -1,5 +1,5 @@
-// Development server. Rebuilds on change and serves dist/ with the blog's Content-Security-Policy,
-// so anything the live site would block fails here first.
+// Development server with automatic rebuilds and the production Content
+// Security Policy, so blocked resources fail locally as well.
 
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, statSync, watch } from 'node:fs';

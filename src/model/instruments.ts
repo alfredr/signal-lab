@@ -1,8 +1,6 @@
-// Instruments in the document: what controls set and readouts read, what
-// they connect to on the diagram, and where their widgets sit on the panel
-// face. The face is a grid like the front of a radio; the document saves each
-// widget's spot by instrument, and widgets without one fill the first free
-// space.
+// Resolves instrument targets, available controls and readings, diagram
+// reference lines, and panel widgets. Panel organization and layout are
+// handled in panels.ts.
 
 import { FT8_MAPPER } from '../blocks/ft8.ts';
 import {
@@ -58,9 +56,9 @@ export function parameterSpec(parameter: Parameter): NumberParam {
 }
 
 /**
- * What a control sets: a parameter by name, or `block.setting`, where the
- * block is a path relative to the control's diagram, as `resolveRef` reads it,
- * and a subsystem's settings are its parameters.
+ * A control target is a parameter name or `block.setting`. Block references
+ * are relative to the control's diagram; subsystem settings refer to their
+ * parameters.
  */
 type Target =
   | { readonly kind: 'parameter'; readonly name: string }
@@ -83,7 +81,7 @@ function parseTarget(target: string): Target | undefined {
   return target ? { kind: 'parameter', name: target } : undefined;
 }
 
-/** A control's setting, worked out against the document. */
+/** Resolved control target and editing operations. */
 export type ControlState = {
   readonly label: string;
   readonly spec: ParamSpec;
@@ -91,12 +89,12 @@ export type ControlState = {
   readonly value: ParamValue;
   /** The expression the setting is bound to, if any. */
   readonly binding: string | undefined;
-  /** What the binding works out to. */
+  /** Evaluated binding value. */
   readonly bound: number | undefined;
   readonly set: (doc: LabDocument, value: ParamValue) => LabDocument;
 };
 
-/** The diagram, at `path` or around it, that declares parameter `name`. */
+/** Finds the nearest enclosing diagram that declares `name`. */
 function parameterScope(
   doc: LabDocument,
   path: Path,
@@ -115,7 +113,10 @@ function parameterScope(
   return undefined;
 }
 
-/** A parameter of the diagram at `path`, and how a binding outside sets it. */
+/**
+ * Resolves a parameter and any binding applied by its containing subsystem
+ * block.
+ */
 function parameterState(
   doc: LabDocument,
   bindings: Bindings,
@@ -137,7 +138,7 @@ function parameterState(
   };
 }
 
-/** What the control at `path` sets, or why it can't. */
+/** Resolves a control target or returns a diagnostic. */
 export function controlState(
   doc: LabDocument,
   bindings: Bindings,
@@ -162,7 +163,7 @@ export function controlState(
     return { problem: 'The block it set is gone.' };
   }
 
-  // A setting reached inside a subsystem is that subsystem's, as seen from here.
+  // Use the enclosing subsystem name when labeling a nested setting.
   const steps = target.block.split('/');
   const up = steps.findIndex((step) => step !== '..');
   const outer =
@@ -206,7 +207,7 @@ export function controlState(
   };
 }
 
-/** Something a control can set, for choosing one. */
+/** A selectable control target. */
 export type Settable = { readonly target: string; readonly label: string };
 
 /**
@@ -231,7 +232,8 @@ export function settables(doc: LabDocument, path: Path): Settable[] {
 
     const name = displayName(block);
     if (isSubsystem(block)) {
-      // Its parameters, and the text settings inside it, which can't be parameters.
+      // Include subsystem parameters and nested text settings, which cannot be
+      // numeric parameters.
       return [
         ...(block.inner.parameters ?? []).map((p) => ({
           target: `${block.id}.${p.name}`,
@@ -278,10 +280,7 @@ function usesParameter(block: LabBlock, name: string): boolean {
   );
 }
 
-/**
- * The blocks of the same diagram an instrument acts on or reads from, which
- * the diagram joins to it with dashed lines.
- */
+/** Finds same-diagram targets for an instrument's dashed reference lines. */
 export function instrumentLeads(diagram: Diagram, block: LabBlock): string[] {
   const local = (ref: string) => {
     const [first] = ref.split('/');
@@ -320,10 +319,9 @@ export type Reach = {
 };
 
 /**
- * The instruments outside the subsystem at `path` that reach into this copy of
- * it: readouts of its blocks, and controls on their settings or on the
- * parameters they use. Each is given at the block of the subsystem's own
- * diagram that it reaches, or that holds what it reaches.
+ * Finds external instruments targeting this subsystem instance. Each result
+ * identifies the immediate child block containing the target, including blocks
+ * driven by externally controlled parameters.
  */
 export function reachingIn(doc: LabDocument, path: Path): Reach[] {
   const inner = diagramAt(doc, path);
@@ -362,8 +360,7 @@ export function reachingIn(doc: LabDocument, path: Path): Reach[] {
       continue;
     }
 
-    // A parameter declared here or around here, unless one further in hides
-    // it, reaches the blocks here that use it.
+    // Include parameter users unless a nested declaration shadows the target.
     const { scope, parameter } = reference;
     const around =
       scope.length <= path.length && scope.every((s, i) => path[i] === s);
@@ -392,8 +389,8 @@ export type FaceItem = {
 };
 
 /**
- * The instruments with a widget on the face, depth first: all but the notes
- * kept to the diagram.
+ * Lists face instruments depth first, excluding notes configured for the
+ * diagram only.
  */
 export function faceItems(doc: LabDocument): FaceItem[] {
   return everyBlock(doc).filter(
@@ -422,8 +419,8 @@ function stacks(doc: LabDocument): ReadonlyMap<string, readonly FaceItem[]> {
 }
 
 /**
- * The instruments with a widget of their own on the face: all but the plots
- * stacked under a view, which join it as rows.
+ * Lists standalone face widgets, excluding plots embedded as rows in a Bits to
+ * tones view.
  */
 export function faceCards(doc: LabDocument): FaceItem[] {
   const stacked = new Set(
@@ -432,10 +429,10 @@ export function faceCards(doc: LabDocument): FaceItem[] {
   return faceItems(doc).filter((item) => !stacked.has(item.id));
 }
 
-/** A signal a Bits to tones view draws, and how far it runs behind the tone. */
+/** A signal trace and its delay relative to the symbol mapper's tone output. */
 type Lagging = { readonly at: PortRef; readonly lag: number };
 
-/** What a Bits to tones view watches. Ports are by full id. */
+/** Signal sources for a Bits to tones view, using full block ids. */
 export type SymbolSources = {
   /** The symbol mapper's full id. */
   readonly mapper: string;
@@ -454,10 +451,9 @@ export type SymbolSources = {
 };
 
 /**
- * What the Bits to tones view `item` watches, or why it can't show anything. A
- * signal made from the mapper's tone runs behind it by the lags of the blocks
- * on the way, such as the Gaussian filter's 42.4 ms, which the view takes back
- * out so its rows line up.
+ * Resolves the signals for a Bits to tones view or returns a diagnostic.
+ * Accumulated processing delays, such as the Gaussian filter's 42.4 ms, align
+ * derived traces with the mapper's symbols.
  */
 export function symbolSources(
   doc: LabDocument,
@@ -506,8 +502,8 @@ export function symbolSources(
       : 0;
   };
 
-  // From a block back up its inputs to the mapper's tone, adding up the lags
-  // on the way; undefined if it isn't made from the tone.
+  // Traces inputs back to the mapper's tone and sums processing delays.
+  // Returns undefined for unrelated signals.
   const lagFrom = (id: string): number | undefined => {
     if (id === local) {
       return 0;
@@ -607,7 +603,7 @@ export function stackHosts(
     }));
 }
 
-/** A widget's size in grid cells until someone resizes it. */
+/** Default widget dimensions in grid cells. */
 export function defaultSize(
   block: LabBlock,
   wide: boolean,
@@ -647,7 +643,7 @@ export function hasControl(diagram: Diagram, target: string): boolean {
   );
 }
 
-/** A reading a readout can show: a block, given relative to the readout. */
+/** A selectable reading with a block reference relative to the readout. */
 export type Readable = {
   readonly block: string;
   readonly reading: string;
@@ -655,8 +651,8 @@ export type Readable = {
 };
 
 /**
- * Every reading a block in the diagram at `path` reports, including inside its
- * subsystems, for choosing what a readout shows.
+ * Lists readings available in this diagram and its subsystems for a readout
+ * picker.
  */
 export function readables(doc: LabDocument, path: Path): Readable[] {
   const diagram = diagramAt(doc, path);

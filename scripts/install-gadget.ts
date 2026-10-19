@@ -1,5 +1,5 @@
-// Copies the built app into the blog as a gadget, at content/gadgets/signal-lab/ in the blog
-// checkout (BLOG_DIR, default ../blog). Preview images already there are kept.
+// Installs the static build into content/gadgets/signal-lab in BLOG_DIR,
+// defaulting to ../blog. Existing preview images are preserved.
 
 import { cpSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';

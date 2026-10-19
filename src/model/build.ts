@@ -1,7 +1,6 @@
-// A compact way to write diagrams in code, for the library and the examples. Layouts are by
-// hand on the 8-unit grid: boxes are 144 x 56, circles 48 x 48, triangles 64 x 56, antennas
-// 48 x 64 (port 56 down) and terminals 80 x 32 (port 16 down). Of the instruments, plots are
-// 240 x 144, controls 176 x 72, readouts 176 x 64, speakers 64 x 64 and notes 240 x 96.
+// Helpers for defining library diagrams and examples. Coordinates use an
+// 8-unit grid. Block dimensions are defined by the layout code and instrument
+// shapes; these helpers preserve the supplied positions.
 
 import {
   BUTTON,

@@ -6,9 +6,9 @@ import { blockAt, type LabDocument } from '../model/document.ts';
 import { displayName, typeOf } from '../model/subsystems.ts';
 
 /**
- * A readable name for a port anywhere in the document: the blocks along its
- * path, then the port's own name if the block has more than one. "Station A ›
- * Modulator", "Phase splitter Q".
+ * Formats a port label from its block path, adding the port name when needed
+ * to distinguish multiple ports. Examples: "Station A › Modulator" and "Phase
+ * splitter Q".
  */
 export function portLabel(
   doc: LabDocument,

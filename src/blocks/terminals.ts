@@ -1,5 +1,5 @@
-// A subsystem's inputs and outputs. Inside the subsystem each terminal is an ordinary block;
-// the model wires its hidden port to whatever connects to the subsystem block outside.
+// Subsystem Input and Output terminals. The model connects each terminal's
+// hidden port to the corresponding external subsystem connection.
 
 import { defineBlock } from '../engine/block.ts';
 

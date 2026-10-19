@@ -1,8 +1,6 @@
-// The block-diagram editor: an SVG canvas that draws one diagram (the document's top level or
-// the inside of a subsystem) and turns pointer gestures into edits. It never changes anything
-// itself; it reports new versions of the diagram through `change`, as previews while a gesture
-// is under way and as a commit when it ends. Instruments draw their own live widgets, which
-// stay in place across redraws so a knob keeps turning while the diagram changes under it.
+// Renders and edits one diagram at a time. Pointer gestures emit immutable
+// document previews and commits through `change`. Instrument widgets persist
+// across redraws to preserve active interactions.
 
 import { isInstrument } from '../blocks/instruments.ts';
 import { INPUT_TERMINAL } from '../blocks/terminals.ts';
@@ -258,10 +256,9 @@ export class DiagramEditor {
   /** Pointers currently down, in client coordinates; two of them make a pinch. */
   readonly #pointers = new Map<number, Point>();
   /**
-   * The last press on a block. Double-clicks are spotted from two presses
-   * rather than the browser's dblclick event, which never fires here: the
-   * first press selects the block, and redrawing replaces the element under
-   * the pointer before the second.
+   * Detect double-clicks from consecutive presses. Selection redraws may
+   * replace the SVG target between clicks, preventing the browser from
+   * emitting dblclick.
    */
   #lastPress:
     | { readonly id: string; readonly time: number; readonly at: Point }
@@ -444,8 +441,8 @@ export class DiagramEditor {
   }
 
   /**
-   * Instruments, each a frame holding its widget, plus dashed leads to what
-   * they set or read. The nodes persist, so a widget being used stays put.
+   * Keep instrument frames and widgets mounted across redraws. Dashed lines
+   * connect instruments to the blocks they control or read.
    */
   #drawInstruments(model: EditorModel): void {
     const { diagram, path, selection } = model;
@@ -1008,9 +1005,9 @@ export class DiagramEditor {
           visiblePorts(type.inputs).length > 1 ||
           visiblePorts(type.outputs).length > 1;
         const inside = summary && !below;
-        // The palette's drawing of the block, over its name, with the name
-        // and summary moved down to make room.
-        // A subsystem from the library, still under its name, has its drawing.
+        // Place the palette icon above the label and adjust text spacing.
+        // Library subsystems retain their icon while their name matches the
+        // template.
         const library = templates.find((t) => t.label === block.name);
         const key = subsystem
           ? `template:${library?.key ?? 'subsystem'}`
@@ -1615,11 +1612,11 @@ export class DiagramEditor {
 }
 
 /**
- * How many notches a mouse wheel turned, down being positive, or undefined if
- * the event comes from two fingers on a trackpad. Firefox counts a wheel in
- * lines, three a notch. Chrome and Safari also give the old wheelDeltaY: 120 a
- * notch from a wheel, and exactly -3 deltaY from a trackpad. Failing both, a
- * wheel moves straight up or down by whole steps of 50 pixels or more.
+ * Estimates mouse-wheel notches, positive downward, or returns undefined for
+ * trackpad scrolling. Firefox line deltas use three lines per notch. Legacy
+ * wheelDeltaY distinguishes 120-unit wheel steps from trackpad deltas equal to
+ * -3 * deltaY. The fallback accepts vertical whole-pixel steps of at least 50
+ * pixels.
  */
 function wheelNotches(event: WheelEvent): number | undefined {
   if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {

@@ -23,11 +23,13 @@
   --lcd-ink: #1c2614;
   --lcd-dots: rgba(28, 38, 20, 0.07);
   --lcd-glow: none;
-  /* FT8's Costas sync symbols, set apart from the data around them. */
+  /* Distinct colors for FT8 Costas synchronization symbols. */
   --sync: #8a5a1d;
   --sync-soft: #f2eadd;
-  /* The panel face: raised modules on a darker panel, dark dials in bright
-     rims, lights in cyan, and screens set into the modules. */
+  /*
+   * Panel palette: recessed screens, raised panes, dark knobs, and cyan
+   * indicators.
+   */
   --panel: #d5dcd8;
   --strip: #c8d0cc;
   --housing: #c6cfca;
@@ -202,8 +204,7 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .toolbar select { width: 10.5rem; }
 .divider { width: 1px; height: 20px; background: var(--rule); margin: 0 4px; }
-/* Buttons that show and hide the side bars and the panel, with an icon of
-   the layout: the part filled while it shows. */
+/* Workspace visibility toggles. Filled icon regions indicate visible areas. */
 .layout-toggles { display: flex; gap: 2px; margin-left: auto; }
 .layout-toggle { display: grid; place-items: center; width: 30px; height: 26px; padding: 0; color: var(--muted); background: none; border-color: transparent; }
 .layout-toggle[aria-pressed] { background: none; border-color: transparent; color: var(--muted); }
@@ -212,7 +213,7 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .layout-icon { width: 16px; height: 16px; }
 .layout-icon rect { fill: none; stroke: currentColor; stroke-width: 1.2; }
 .layout-toggle[aria-pressed="true"] .layout-icon .part { fill: currentColor; }
-/* The colors: the system's, light or dark. */
+/* System, light, and dark theme icons. */
 .theme-icon { width: 16px; height: 16px; }
 .theme-icon circle, .theme-icon path { fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; }
 .theme-icon .fill { fill: currentColor; stroke: none; }
@@ -222,9 +223,10 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .statusbar { display: flex; align-items: center; min-width: 0; height: 24px; padding: 0 12px; border-top: 1px solid var(--rule); background: var(--surface); }
 .status { margin: 0; font: 400 11.5px/1 var(--font-mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* Workspace: a side bar either side of the middle, where the diagram sits
-   over the panel face or beside it. Each can be closed, and dragged wider or
-   narrower by the edge it shares with the middle. */
+/*
+ * Workspace grid with resizable sidebars and a panel below or beside the
+ * diagram.
+ */
 
 .workspace {
   --blocks-column: var(--blocks-width, 208px);
@@ -262,7 +264,7 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .workspace.panel-right .face { border-top: 0; border-left: 1px solid var(--rule); }
 .workspace.panel-max .face { border: 0; }
 
-/* The edges to drag, which light up when the pointer finds them. */
+/* Resize handles with hover indicators. */
 .sash { position: absolute; z-index: 6; touch-action: none; }
 .sash::after { content: ""; position: absolute; inset: 1px; background: var(--accent); opacity: 0; transition: opacity 0.1s; }
 .sash:hover::after { opacity: 1; transition-delay: 0.3s; }
@@ -274,7 +276,7 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .workspace.panel-right .sash-panel { left: auto; right: calc(var(--panel-track) - 3px); height: auto; }
 .workspace.no-blocks .sash-blocks, .workspace.no-inspector .sash-inspector, .workspace.no-panel .sash-panel, .workspace.panel-max .sash-panel { display: none; }
 
-/* Docking the panel by dragging its title: a shadow shows where it would go. */
+/* Panel docking preview while dragging the title. */
 .dock-handle { cursor: grab; user-select: none; touch-action: none; }
 .workspace.docking, .workspace.docking * { cursor: grabbing !important; }
 .dock-preview { position: absolute; z-index: 7; pointer-events: none; background: color-mix(in srgb, var(--accent) 16%, transparent); outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; transition: inset 0.12s ease; }
@@ -296,8 +298,7 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
   text-transform: uppercase;
   color: var(--muted);
 }
-/* The palette: tiles with a drawing of each block, in categories that fold
-   away, under a filter that stays put. */
+/* Block tiles in collapsible categories beneath a sticky search field. */
 .palette-search { position: sticky; top: 0; z-index: 1; margin: 0 -12px 4px; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--rule); }
 input.palette-filter { width: 100%; padding: 5px 8px; font: 500 12px/1.2 var(--font-mono); appearance: none; -webkit-appearance: none; }
 button.palette-heading { display: flex; align-items: center; gap: 7px; width: 100%; margin: 0; padding: 7px 2px; background: none; border: 0; border-radius: 4px; text-align: left; cursor: pointer; }
@@ -315,7 +316,7 @@ button.palette-heading::before { content: ""; flex: none; border-left: 4.5px sol
 .block-icon { flex: none; width: 24px; height: 24px; }
 .block-icon path, .block-icon circle, .block-icon rect { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .block-icon .dashed { stroke-dasharray: 2.5 2; }
-/* Library subsystems: built from other blocks, which you can open up. */
+/* Dashed borders distinguish reusable library subsystems. */
 .palette-item.composite { border-style: dashed; }
 
 /* Diagram */
@@ -330,17 +331,16 @@ button.palette-heading::before { content: ""; flex: none; border-left: 4.5px sol
 .block.error .body { stroke: var(--warn); stroke-width: 1.8; }
 .block.idle { opacity: 0.55; }
 .block text { fill: var(--ink); text-anchor: middle; dominant-baseline: middle; pointer-events: none; }
-/* text-anchor as an SVG attribute loses to the rule above, so labels that hang off one side use these. */
+/* Override the shared text-anchor rule for labels aligned to one side. */
 .block text.anchor-start { text-anchor: start; }
 .block text.anchor-end { text-anchor: end; }
 .block .title { font: 700 13px var(--font-display); }
 .block .summary { font: 400 11px var(--font-mono); fill: var(--muted); }
 .block .summary.inside { fill: var(--ink); }
-/* The palette's drawing of a block, small and quiet over its name. */
+/* Small block icons above diagram labels. */
 .block .block-icon { color: var(--muted); overflow: visible; }
 .block .block-icon path, .block .block-icon circle, .block .block-icon rect { stroke-width: 2; }
-/* A block drawn as a schematic symbol: the drawing is its face, and its name
-   above reads as the name of anything else on the diagram. */
+/* Schematic symbols with labels above the drawing. */
 .block.shape-symbol .block-icon { color: var(--ink); }
 .block.shape-symbol .block-icon path, .block.shape-symbol .block-icon circle, .block.shape-symbol .block-icon rect { stroke-width: 1.6; }
 .block.shape-symbol .label { fill: var(--ink); }
@@ -360,7 +360,7 @@ button.palette-heading::before { content: ""; flex: none; border-left: 4.5px sol
 .wire-hit { fill: none; stroke: transparent; stroke-width: 12; cursor: pointer; }
 .wire.selected .wire-line { stroke: var(--accent); stroke-width: 2.6; }
 .wire-line.dragging { stroke: var(--accent); stroke-dasharray: 5 4; }
-/* The wire or marquee being dragged must never sit between the pointer and the port under it. */
+/* Keep drag previews from intercepting port hit testing. */
 .overlay { pointer-events: none; }
 
 .block.selected .antenna { stroke: var(--accent); }
@@ -369,7 +369,7 @@ button.palette-heading::before { content: ""; flex: none; border-left: 4.5px sol
 .hit { fill: transparent; }
 .shape-terminal .body { fill: var(--accent-soft); stroke: var(--accent); }
 .shape-terminal .title { font: 600 11px var(--font-mono); }
-/* Inside a subsystem: what each terminal is wired to outside, for the copy opened. */
+/* External connections for the currently open subsystem instance. */
 .outside-lead { fill: none; stroke: var(--accent); stroke-width: 1.4; stroke-dasharray: 4 3; }
 .outside-label { font: 600 11px var(--font-mono); fill: var(--accent); dominant-baseline: middle; cursor: pointer; }
 .outside-label:hover { text-decoration: underline; }
@@ -418,7 +418,7 @@ button.palette-heading::before { content: ""; flex: none; border-left: 4.5px sol
 .expression-result.error { color: var(--warn); white-space: normal; grid-column: 1 / -1; }
 .parameters, .settings { display: grid; gap: 10px; }
 .parameter-list { display: grid; gap: 14px; }
-/* A subsystem's parameter bound on the subsystem block outside: the binding, read-only. */
+/* Read-only display of bindings applied by the enclosing subsystem block. */
 .outside-binding { margin-top: 8px; }
 .outside-binding code.expression { padding: 4px 7px; font: 500 12px var(--font-mono); color: var(--ink); background: var(--bg); border: 1px dashed var(--rule); border-radius: 6px; overflow-wrap: anywhere; }
 .outside-binding .control-help { margin: 4px 0 0; }
@@ -489,7 +489,7 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .segment input:checked + span { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--rule); }
 .segment input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-/* An FT8 message's fields, each worked out, its bits lit as they go out. */
+/* FT8 message fields with transmitted bits highlighted. */
 .packing { display: grid; gap: 6px; }
 .packing .control-help { margin: 0; }
 .pack-fields { display: grid; gap: 8px; }
@@ -566,7 +566,7 @@ math { font-size: 1.05em; }
 .plot { display: block; width: 100%; height: 170px; touch-action: none; cursor: grab; }
 .panel-empty { margin: 0; padding: 40px 12px; text-align: center; color: var(--muted); font: 400 12px var(--font-mono); }
 
-/* Instruments on the diagram: a frame holding the same widget the face shows. */
+/* Diagram instrument frames containing live widgets. */
 
 .instrument .body { fill: var(--surface); stroke: var(--rule); stroke-width: 1.2; }
 .instrument.selected .body { stroke: var(--accent); stroke-width: 2.2; }
@@ -582,7 +582,7 @@ math { font-size: 1.05em; }
 .widget-plot { display: flex; flex-direction: column; gap: 2px; }
 .widget-plot .plot-wrap, .face-body .plot-wrap { position: relative; flex: 1; min-height: 40px; }
 .widget-plot .plot, .face-body .plot { position: absolute; inset: 0; width: 100%; height: 100%; }
-/* What a small screen says while it has nothing to plot, centered in its space. */
+/* Centered placeholder text for empty compact plots. */
 .widget-plot .panel-empty, .face-body .panel-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 6px 10px; overflow: hidden; }
 .widget-plot .panel-empty { font-size: 11px; }
 .widget-plot .plot { cursor: inherit; }
@@ -596,8 +596,7 @@ math { font-size: 1.05em; }
 .instrument-face .widget-note { font-size: 12px; }
 .widget-note p { margin: 0 0 6px; }
 
-/* A knob: a dark dial in a bright rim, its value lit around the edge and
-   written in the middle, and the ends of its range under it. */
+/* Rotary controls with illuminated value arcs and range labels. */
 .knob-control { display: grid; justify-items: center; align-content: center; gap: 4px; height: 100%; }
 .knob-control .control-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .knob-well { display: grid; place-items: center; padding: 4px; }
@@ -613,7 +612,7 @@ math { font-size: 1.05em; }
 .knob-track { stroke: var(--knob-track); }
 .knob-fill { stroke: var(--lit); filter: drop-shadow(0 0 2px var(--lit-glow)); }
 .knob-tip { fill: var(--knob-ink); }
-/* The value sits in the middle of the dial, and takes typing on a double-click. */
+/* Center the value in the dial; double-click enables text entry. */
 input.knob-value {
   width: 46px; padding: 1px 0; text-align: center; color: var(--knob-ink); background: none; border: 0; border-radius: 3px;
   font: 600 10px/1.1 var(--font-mono); font-variant-numeric: tabular-nums; pointer-events: none;
@@ -630,7 +629,7 @@ input.knob-value.long { font-size: 9px; letter-spacing: -0.04em; }
 .instrument-face input.knob-value { grid-column: 2; grid-row: 2; width: 100%; color: var(--ink); text-align: left; font-size: 12px; pointer-events: auto; }
 .instrument-face .knob-range { display: none; }
 
-/* A speaker: a perforated grille in a rim, and a switch with a light. */
+/* Speaker grille and playback indicator. */
 .widget-speaker { display: grid; justify-items: center; align-content: center; gap: 10px; }
 .speaker-grille {
   width: 54px; height: 54px; border-radius: 50%;
@@ -659,11 +658,11 @@ input.knob-value.long { font-size: 9px; letter-spacing: -0.04em; }
   color: var(--lcd-ink); text-shadow: var(--lcd-glow); background: var(--lcd); border-radius: 3px;
   box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
 }
-/* Running slower than asked, because the simulation can't keep up. */
+/* Highlight playback that is limited by simulation throughput. */
 .transport-time.behind { color: var(--warn); }
 .run { min-width: 7.5em; }
 
-/* Buttons and choosers on the panel: small, raised, lettered in capitals. */
+/* Compact panel controls with raised styling and uppercase labels. */
 .face button.small, .face select {
   width: auto; padding: 4px 8px; border: 1px solid var(--module-edge); border-radius: 4px;
   background: linear-gradient(var(--module), var(--module-low)); box-shadow: inset 0 1px 0 var(--module-shine), 0 1px 1px rgba(0, 0, 0, 0.1);
@@ -671,21 +670,22 @@ input.knob-value.long { font-size: 9px; letter-spacing: -0.04em; }
 }
 .face button.small:hover:not(:disabled), .face select:hover { color: var(--ink); border-color: var(--lit); }
 .face button.small[aria-pressed="true"] { color: var(--ink); background: linear-gradient(var(--module-low), var(--module)); border-color: var(--module-edge); }
-/* Switches with a light in them: Listen, a speaker's power, Run. */
+/* Playback indicators for Listen, speakers, and Run. */
 .face button.play, .face button.run { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
 .face button.play::before, .face button.run::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--led-off); box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.35); }
 .face button.play[aria-pressed="true"]::before, .face button.run[aria-pressed="true"]::before { background: var(--lit); box-shadow: 0 0 6px 1px var(--lit-glow); }
 
-/* Panels hold panes and panes hold instruments. A panel is a housing, a pane
-   a raised plate, and the instruments sit on the plate. Panes wrap to fit
-   their panel, and panels stack, tile or take turns as tabs. */
+/*
+ * Panels contain wrapping panes; panes contain instruments. Panels support
+ * stacked, tiled, and tabbed presentation.
+ */
 .face-panels { position: relative; display: flex; flex-direction: column; gap: 14px; }
 .face-panels[data-mode="tile"] { flex-direction: row; flex-wrap: wrap; align-items: stretch; }
 .face-panels[data-mode="tile"] > .face-panel { flex-shrink: 1; }
 .face-panels[data-mode="tile"] > .scope-pane { flex-grow: 0; }
 .face-panel { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 6px; background: var(--housing); border: 1px solid var(--module-edge); border-radius: 8px; box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.12); }
 .panel-head, .pane-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
-/* A pane with nothing to say in its head, out of arranging, has none. */
+/* Hide redundant pane headers outside Arrange mode. */
 .face-panels:not(.arranging) .pane-head:has(> .pane-title[hidden]) { display: none; }
 .panel-head { height: 24px; padding: 0 4px; }
 .panel-title, .pane-title { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 10px/1.2 var(--font-display); font-stretch: 112%; letter-spacing: 0.18em; text-transform: uppercase; color: var(--silk); }
@@ -697,12 +697,12 @@ input.knob-value.long { font-size: 9px; letter-spacing: -0.04em; }
   box-shadow: inset 0 1px 0 var(--module-shine), 0 1px 3px rgba(0, 0, 0, 0.14);
 }
 .pane-head { height: 18px; }
-/* A pane's instruments, each placed where the pane's layout puts it. */
+/* Instrument positions are assigned by the pane layout. */
 .pane-grid { position: relative; flex: 1 1 auto; min-width: 0; }
 .pane-grid > .face-item { position: absolute; }
 .scope-pane { border-style: dashed; }
 .face-item { display: flex; min-width: 0; min-height: 0; }
-/* An instrument sits on its pane, with no plate of its own. */
+/* Instruments share their pane background. */
 .face-body { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border-radius: 4px; }
 .face-body > * { flex: 1; min-height: 0; }
 .face-item.selected .face-body { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -714,8 +714,7 @@ input.knob-value.long { font-size: 9px; letter-spacing: -0.04em; }
 .face button.face-tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--lit); }
 .face-modes { display: flex; gap: 2px; }
 
-/* Arranging: grips to drag instruments, panes and panels by, names to edit,
-   and a bar where what is dragged would land. */
+/* Arrange-mode drag handles, editable titles, and insertion marker. */
 .panel-name, .pane-name, .panel-tools, .face-panel .grip, .pane .grip, .pane-head .small { display: none; }
 .face-panels.arranging .panel-title, .face-panels.arranging .pane-title { display: none; }
 .face-panels.arranging .panel-name, .face-panels.arranging .pane-name { display: block; flex: 1; min-width: 0; padding: 2px 6px; font: 600 11px/1.2 var(--font-mono); background: var(--module); }
@@ -730,8 +729,10 @@ input.knob-value.long { font-size: 9px; letter-spacing: -0.04em; }
 .face-body .widget-value { color: var(--ink); }
 .face-body .widget-note { color: var(--silk); }
 
-/* A screen module: its name and Listen along the top, over a screen set
-   into the plate, with the views and what it measures on the screen. */
+/*
+ * Signal display with title and Listen control above the view selector and
+ * measurements.
+ */
 .face-body .signal-panel { display: flex; flex-direction: column; gap: 6px; padding: 0; background: none; border: 0; }
 .face-body .signal-head { gap: 8px; margin: 0; }
 .face-body .signal-name { flex: 1 1 0; }
@@ -753,25 +754,25 @@ input.knob-value.long { font-size: 9px; letter-spacing: -0.04em; }
 .signal-meta { flex: 1; min-width: 0; text-align: right; font: 500 10px/1.3 var(--font-mono); color: var(--screen-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .face-body .widget-symbols { gap: 6px; }
 .face-body .widget-readout { gap: 4px; }
-/* Readouts, fields and buttons sit in the middle of their row, a button with
-   room above it for a label, so their displays and caps line up; a button is
-   as tall as an LCD. */
+/*
+ * Align readouts, inputs, and buttons within rows. Reserve label space above
+ * buttons and match their height to LCD fields.
+ */
 .face-body .widget-readout, .face-body .widget-control, .face-body .widget-button { align-content: center; }
 .face-body .widget-button::before { content: ""; height: 16px; }
 .face-body button.push { min-height: 34px; height: 34px; padding: 0 18px; border-radius: 5px; }
-/* A knob with room to spare grows, its value and range with it. */
+/* Scale knob labels and ranges with the knob diameter. */
 .face-body .knob { width: var(--knob-size, 60px); height: var(--knob-size, 60px); }
 .face-body input.knob-value { width: calc(var(--knob-size, 60px) * 0.78); font-size: calc(var(--knob-size, 60px) / 6); }
 .face-body input.knob-value.long { font-size: calc(var(--knob-size, 60px) / 6.7); }
 .face-body .knob-range { width: calc(var(--knob-size, 60px) + 24px); }
-/* A speaker sits as a knob does, and grows as one does. */
+/* Match speaker sizing and alignment to knob controls. */
 .face-body .widget-speaker { gap: 4px; }
 .face-body .speaker-well { padding: 4px; }
 .face-body .speaker-grille { width: var(--knob-size, 60px); height: var(--knob-size, 60px); cursor: pointer; }
 .face-body .widget-speaker .play { padding: 2px 8px; }
 
-/* A faux LCD, for readouts and for typing into: a recessed panel with a faint
-   dot-matrix grid behind segment-colored mono text. */
+/* LCD styling shared by readings and editable fields. */
 .lcd {
   display: block; width: 100%; min-width: 0; padding: 5px 9px;
   background-color: var(--lcd);
@@ -793,15 +794,16 @@ input[type="text"].lcd {
   font: 600 18px/1.25 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase;
 }
 input.lcd:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-/* On the face an LCD is the same height whether it shows or takes text, and
-   sits the same distance under its label, so a row of them lines up. */
+/*
+ * Match face LCD heights and label spacing for editable and read-only values.
+ */
 .face-body .widget-value.lcd, .face-body input[type="text"].lcd { height: 34px; padding: 0 9px; font-size: 16px; line-height: 32px; letter-spacing: 0.04em; }
 .face-body .widget-readout:has(> .lcd) { gap: 4px; }
-/* On the diagram, an LCD that shows and one that takes text are one size. */
+/* Match editable and read-only LCD dimensions on the diagram. */
 .instrument-face .widget-value.lcd, .instrument-face input[type="text"].lcd { height: 24px; padding: 0 6px; font-size: 12px; line-height: 22px; }
 .lcd-control { display: grid; gap: 4px; min-width: 0; }
 
-/* A push button: a dark cap in a bright rim, lit for a moment when pressed. */
+/* Momentary button with press illumination. */
 .widget-button { display: grid; place-items: center; height: 100%; }
 button.push {
   min-width: 64px; min-height: 40px; padding: 8px 16px; border: 0; border-radius: 8px;
@@ -816,15 +818,14 @@ button.push:active, button.push.pressed {
 }
 .instrument-face button.push { min-width: 48px; min-height: 28px; padding: 4px 10px; font-size: 10px; }
 
-/* A Recording's sound in the inspector. */
+/* Recording controls in the inspector. */
 .clip-picker { display: grid; gap: 6px; }
 .clip-name { font: 400 12px/1.3 var(--font-mono); color: var(--muted); }
 .clip-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
 .clip-status { font: 400 11px/1.3 var(--font-mono); color: var(--muted); }
 .clip-status:empty { display: none; }
 .face-body .widget-value { font-size: 20px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* A number on the face shows on a small screen set into the module, as the
-   LCDs do. */
+/* Numeric face readout styled as an inset display. */
 .face-body .widget-value:not(.lcd) {
   height: 34px; padding: 0 9px; line-height: 32px; font-size: 17px; font-variant-numeric: tabular-nums;
   color: var(--screen-trace); background: var(--screen); border: 1px solid var(--screen-edge); border-radius: 4px;
@@ -854,25 +855,27 @@ button.push:active, button.push.pressed {
   .workspace .center, .workspace.panel-right .center { grid-template-columns: minmax(0, 1fr); grid-template-rows: 62vh auto; grid-template-areas: "canvas" "face"; }
   .workspace.panel-right .face { border-left: 0; border-top: 1px solid var(--rule); }
   .sash { display: none; }
-  /* Everything stacks here, so there is nothing to dock, resize or toggle. */
+  /* Hide desktop layout controls in the stacked mobile layout. */
   .layout-toggles, .topbar .divider, .face button.icon-button, .area-close { display: none; }
-  /* Whatever a wider screen closed or maximized, here everything shows. */
+  /*
+   * Show all areas on narrow screens regardless of saved desktop visibility.
+   */
   .workspace.no-blocks .area-blocks, .workspace.no-inspector .area-inspector { display: flex; }
   .workspace.no-panel .face { display: block; }
   .workspace.panel-max .canvas { display: block; }
   .workspace.no-panel .center, .workspace.panel-max .center { grid-template-rows: 62vh auto; grid-template-areas: "canvas" "face"; }
   .topbar { gap: 8px 12px; padding: 8px 52px 8px 12px; }
-  /* The colors' switch goes up in the corner, beside the name. */
+  /* Position the theme switch beside the brand. */
   .layout-toggles + .layout-toggle { position: absolute; top: 8px; right: 12px; margin: 0; border-left: 0; }
   .area-blocks, .area-inspector { border: 0; border-top: 1px solid var(--rule); }
   .face { overflow: auto; }
 }
 
-/* On a touch screen, every field takes text at 16px: iOS zooms the page in on
-   any smaller one when it is tapped. Fields are sized in many places, each
-   more specific than a rule for all of them, so this one is !important. A
-   knob's value takes typing only after a double-click, and keeps its size
-   in the dial until then. */
+/*
+ * Use 16px inputs on touch screens to avoid iOS focus zoom. !important
+ * overrides component-specific font sizes. Knob values remain compact until
+ * text entry is enabled.
+ */
 @media (pointer: coarse) {
   input:not(.knob-value), select, textarea, .knob-control.typing input.knob-value { font-size: 16px !important; }
 }

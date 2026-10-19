@@ -1,9 +1,6 @@
-// The workspace's layout, as in a code editor: the diagram in the middle, the
-// Blocks palette in a side bar on the left, the Inspector in one on the right,
-// and the panel face under the diagram or beside it. Each can be closed and
-// opened again from the top bar or with a shortcut, dragged to another size
-// by the edge it shares with the diagram, and the face can take the whole
-// middle. The layout is this browser's own, kept in local storage.
+// Manages workspace sidebars and the dockable instrument panel. Supports
+// visibility toggles, resizing, docking, and panel maximization. Layout
+// preferences are stored in this browser.
 
 import { html, isTyping, svg } from './dom.ts';
 
@@ -28,14 +25,14 @@ const DEFAULTS: State = {
   panel: { open: true, size: 380, position: 'bottom', maximized: false },
 };
 
-/** How small each can be dragged, and below what a drag closes it. */
+/** Minimum sizes and thresholds below which dragging closes an area. */
 const LIMITS = {
   blocks: { min: 140, max: 420, close: 90 },
   inspector: { min: 240, max: 640, close: 150 },
   panel: { min: 140, close: 70 },
 } as const;
 
-/** What the diagram keeps when the panel is dragged big. */
+/** Minimum diagram space retained while resizing the panel. */
 const DIAGRAM_MIN = 160;
 
 const KEY = 'signal-lab:layout';
@@ -66,7 +63,7 @@ function save(state: State): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
   } catch {
-    // Without storage the layout lasts as long as the page.
+    // Keep the layout for this session if storage is unavailable.
   }
 }
 
@@ -123,7 +120,7 @@ export class Layout {
   readonly #maximize: HTMLButtonElement;
   readonly #move: HTMLButtonElement;
   readonly #close: HTMLButtonElement;
-  /** Where the panel would go if let go of now, while it is dragged. */
+  /** Docking preview for the current drag target. */
   readonly #preview = html('div', { class: 'dock-preview', hidden: true });
   #state = load();
 
@@ -237,9 +234,8 @@ export class Layout {
   }
 
   /**
-   * Makes `handle`, the panel's title, something to drag the panel by: over
-   * the middle, a shadow shows where it would dock, under the diagram or
-   * beside it, and letting go puts it there. Escape puts it back.
+   * Enables panel docking by dragging its title. A preview shows the target
+   * edge; releasing docks the panel and Escape cancels.
    */
   dockHandle(handle: HTMLElement): void {
     handle.classList.add('dock-handle');
@@ -280,7 +276,7 @@ export class Layout {
 
       drag.moved = true;
       this.#workspace.classList.add('docking');
-      // Whichever edge of the middle the pointer is nearer.
+      // Choose the nearest edge using normalized distances.
       const box = this.#center.getBoundingClientRect();
       const across = (box.right - event.clientX) / box.width;
       const down = (box.bottom - event.clientY) / box.height;
@@ -314,7 +310,7 @@ export class Layout {
       [area]: {
         ...now,
         open: !now.open,
-        // Opened again from a drag that closed it, it comes back at a usable size.
+        // Restore a usable size when reopening an area collapsed by dragging.
         ...('width' in now && now.width < LIMITS[area].min
           ? { width: DEFAULTS[area as 'blocks'].width }
           : {}),
@@ -359,7 +355,7 @@ export class Layout {
       ? 'Restore the panel'
       : 'Maximize the panel';
     this.#maximize.setAttribute('aria-pressed', String(panel.maximized));
-    // The move button shows where it would put the panel.
+    // The move icon indicates the destination edge.
     this.#move.replaceChildren(
       icon(panel.position === 'bottom' ? 'right' : 'bottom'),
     );
@@ -370,9 +366,9 @@ export class Layout {
   }
 
   /**
-   * An edge to drag: `measure` gives the size the pointer asks for, from the
-   * box it is measured against. Dragged small enough, the area closes; a
-   * double-click puts it back to its usual size.
+   * Adds a resize handle. `measure` converts pointer coordinates to the
+   * requested size. Dragging below the close threshold hides the area;
+   * double-clicking restores defaults.
    */
   #sash(
     area: Area,

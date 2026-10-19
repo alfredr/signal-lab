@@ -206,10 +206,9 @@ export const recording = defineBlock({
 });
 
 /**
- * How a Recording or Speech block plays its take: over and over if it loops,
- * aligned with the stream's time, or else once from the start each time its
- * trigger input rises through 0.5 or it is pressed. `describe` adds readings
- * for where it is in the take.
+ * Shared Recording and Speech playback processor. Loops align with stream
+ * time; one-shot playback restarts on a rising trigger crossing at 0.5 or an
+ * external press. `describe` supplies position-dependent readings.
  */
 export function playback(
   take: Float32Array,
@@ -225,9 +224,8 @@ export function playback(
   let last = 0;
   return {
     process([trigger], [out], start, end) {
-      // Where the trigger rose, in this chunk's output samples. Only the
-      // trigger samples under [start, end) count: in a feedback loop the rest
-      // are not worked out yet.
+      // Detect trigger crossings only within [start, end). Later samples may
+      // be uncomputed when processing feedback spans.
       const starts: number[] = pressed ? [start] : [];
       pressed = false;
       const scale = trigger.length / out.length;

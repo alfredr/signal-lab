@@ -1,7 +1,7 @@
-// Antennas. An antenna radiates whatever is wired into it and hears everything the other
-// antennas radiate, plus band noise: there is one shared air and no wire to draw. The engine
-// runs each antenna as two halves, one that radiates and one that hears, joined through hidden
-// Air blocks the model adds, so an antenna that does both never looks like a feedback loop.
+// Antennas transmit their input and receive other antennas plus configured
+// band noise through a shared simulated channel. Separate transmit and receive
+// halves connect through hidden Air blocks, avoiding an artificial
+// self-feedback loop.
 
 import { BlockError, defineBlock, type BlockType } from '../engine/block.ts';
 import { amplitudeFromDecibels, decibels, si } from '../engine/format.ts';

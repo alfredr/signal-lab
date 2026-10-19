@@ -154,8 +154,8 @@ Its parameters, ${code('carrier')} and ${code('mu')}, are the transmitter's sett
 }
 
 /**
- * An AM receiver with its output port at height `y`: antenna, tuned circuit,
- * envelope detector, audio filter, back down to 48 kHz and a DC block.
+ * Builds an AM receiver with its output at height `y`: antenna, tuned circuit,
+ * envelope detector, audio filter, resampling to 48 kHz, and DC removal.
  */
 function amReceiver(y: number, tuned: StoredParams, noise: number): Chain {
   return {
@@ -219,9 +219,8 @@ type Band = { readonly carrier: number; readonly rate: number };
 const BROADCAST: Band = { carrier: 100_000, rate: RF };
 
 /**
- * An SSB transmitter by the phasing method, fed from `source`: a phase
- * splitter, two mixers on carriers 90 degrees apart, and their difference (the
- * upper sideband) to the antenna. The source sits at (0, 80).
+ * Builds an upper-sideband transmitter using quadrature mixing and
+ * subtraction. Input `source` is positioned at (0, 80).
  */
 function phasingTransmitter(
   source: string,
@@ -275,9 +274,8 @@ function phasingTransmitter(
 }
 
 /**
- * A receiver that multiplies by its own oscillator `lo` (named `name`) and
- * low-pass filters the product, then returns to the audio rate: for DSB-SC and
- * SSB.
+ * Builds a product detector for DSB-SC or SSB: mix with oscillator `lo`,
+ * labeled `name`, low-pass filter, and resample to the audio rate.
  */
 function productReceiver(
   y: number,

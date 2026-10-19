@@ -1,8 +1,6 @@
-// Parameter names and the scopes they live in. A block's bindings, and a control set to a
-// parameter, name parameters of their own diagram or of a diagram around it, the nearest
-// declaration winning. Whatever moves blocks or parameters between diagrams, or renames one,
-// has to leave every name pointing at the declaration it pointed at before; these are the tools
-// for that.
+// Parameter scope analysis and reference rewriting. Bindings and controls
+// resolve names to the nearest enclosing declaration. Structural edits and
+// renames must preserve that resolution.
 
 import type { Diagram, LabBlock } from './document.ts';
 import {
@@ -12,14 +10,12 @@ import {
   renameIn,
 } from './expressions.ts';
 
-// As in blocks/instruments.ts, which the model can't import without pulling
-// in the block library.
+// Keep the kind name local to avoid importing the full block library.
 const CONTROL_KIND = 'control';
 
 /**
- * The names a block uses where it sits: in its bindings (for a subsystem, the
- * expressions that set its parameters) and, for a control, the parameter it
- * sets.
+ * Names referenced by a block's bindings or by a control's parameter target.
+ * Subsystem bindings are evaluated in the containing diagram.
  */
 function namesUsedBy(block: LabBlock): string[] {
   const names = Object.values(block.bindings ?? {}).flatMap((expression) => {
@@ -38,8 +34,8 @@ const declared = (diagram: Diagram) =>
   new Set(diagram.parameters?.map((p) => p.name));
 
 /**
- * The names used in a diagram, or in the subsystems inside it, that it doesn't
- * declare itself: those that reach out to the diagrams around it.
+ * Finds names used by this diagram or its descendants without a local
+ * declaration.
  */
 export function freeNames(diagram: Diagram): Set<string> {
   const own = declared(diagram);
@@ -59,7 +55,7 @@ export function freeNames(diagram: Diagram): Set<string> {
   return free;
 }
 
-/** Every name declared in a diagram and in the subsystems inside it. */
+/** Collects parameter declarations in this diagram and all descendants. */
 export function declaredWithin(diagram: Diagram): Set<string> {
   return new Set([
     ...declared(diagram),
@@ -69,7 +65,7 @@ export function declaredWithin(diagram: Diagram): Set<string> {
   ]);
 }
 
-/** `base`, or `base` with a number after it, whichever `taken` lacks. */
+/** Finds an unused name by appending a number to `base` when necessary. */
 export function freshName(base: string, taken: ReadonlySet<string>): string {
   let name = base;
   for (let k = 2; taken.has(name); k++) {
@@ -80,11 +76,9 @@ export function freshName(base: string, taken: ReadonlySet<string>): string {
 }
 
 /**
- * Points what uses parameters in a diagram at new names, all at once: its
- * blocks' bindings and the controls that set them, and the same in the
- * subsystems inside it, except where a subsystem declares a parameter of that
- * name itself, which hides the one outside. A name can also map to an
- * expression in parentheses, which only bindings take.
+ * Rewrites parameter uses simultaneously in bindings and controls, stopping at
+ * descendant scopes that redeclare a name. Bindings also accept replacements
+ * with parenthesized expressions; controls accept names only.
  */
 export function renameUses<D extends Diagram>(
   diagram: D,

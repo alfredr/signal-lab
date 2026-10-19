@@ -1,8 +1,7 @@
-// A parallel formant synthesizer, ported from klattsch's FormantSynth (MIT, copyright 2026
-// Tony Gies; see licenses/klattsch.txt). A glottal pulse (for voiced sounds) and noise (for
-// unvoiced ones) excite three band-pass resonators in parallel, one for each formant of the
-// vocal tract, and their sum is the speech. Every parameter glides in a straight line to each
-// new target, so one phoneme runs into the next.
+// Parallel formant synthesizer ported from klattsch's FormantSynth (MIT,
+// copyright 2026 Tony Gies; see licenses/klattsch.txt). Glottal pulses and
+// noise excite three parallel band-pass resonators. Parameters interpolate
+// linearly between phoneme targets.
 
 /** Everything the synthesizer is told, at any moment. */
 export type Voice = {
@@ -120,9 +119,9 @@ class Resonator {
 }
 
 /**
- * The derivative of a Rosenberg glottal pulse at `phase` (0 to 1) of a period:
- * a rise while the vocal folds open, a sharp fall as they close, then nothing
- * while closed. `effort` sharpens the closing.
+ * Derivative of a Rosenberg glottal pulse at normalized `phase` in [0, 1):
+ * opening rise, closing fall, and a closed interval. `effort` sharpens the
+ * closing transition.
  */
 function glottalPulse(phase: number, effort: number): number {
   const e = Math.min(1, Math.max(0, effort));

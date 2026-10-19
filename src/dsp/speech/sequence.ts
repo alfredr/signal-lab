@@ -1,8 +1,7 @@
-// Turning phonemes into a schedule of targets for the formant synthesizer: how long each one
-// lasts, how a stop or a diphthong unfolds, and the pitch. The timing rules follow klattsch's
-// sequencer (MIT, copyright 2026 Tony Gies; see licenses/klattsch.txt). The pitch is ours: it
-// falls gently across each phrase, as speech does, rises on a stressed syllable, and rises at
-// the end of a question.
+// Schedules formant targets, phoneme durations, stop and diphthong
+// transitions, and pitch. Timing rules follow klattsch's sequencer (MIT,
+// copyright 2026 Tony Gies; see licenses/klattsch.txt). The pitch contour adds
+// phrase declination, stressed-syllable rises, and rising question endings.
 
 import type { Step, Voice } from './formants.ts';
 import { PHONEMES } from './phonemes.ts';

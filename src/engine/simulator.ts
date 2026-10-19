@@ -1,16 +1,14 @@
-// Runs a circuit as a stream, forward in time from 0 for as long as it is asked to.
+// Streams a circuit forward from time zero in bounded chunks. Wires carry
+// samples for the same time interval at their own rates; processors retain
+// state between chunks.
 //
-// Time model: the stream advances in chunks of a few tens of milliseconds. In each chunk every
-// wire carries the samples of that stretch of time at its own sample rate, and blocks are causal
-// processors that keep their state from one chunk to the next. The stream splits the block graph
-// into strongly connected components and runs them upstream first. A lone block takes a whole
-// chunk in one call. A feedback loop (a component with a cycle) must contain a delay, and its
-// blocks are stepped together in spans no longer than the shortest delay, so every value a block
-// reads already exists. Loops run at a single sample rate.
+// The scheduler orders strongly connected components upstream first. Acyclic
+// blocks process whole chunks. Feedback components require a delay and a
+// common sample rate, and run in spans bounded by their shortest delay.
 //
-// Loading a changed circuit keeps the stream where it is. A block whose kind and rates are
-// unchanged keeps its processor and takes new settings in place where it can, so turning a knob
-// changes what happens from then on and leaves the past alone.
+// Circuit updates preserve simulation time and reuse compatible processors.
+// Settings changes apply to subsequent samples without altering existing
+// history.
 
 import {
   isDelayProcessor,
@@ -36,31 +34,28 @@ export type BlockStatus =
   | { readonly state: 'idle'; readonly reason: string }
   | { readonly state: 'error'; readonly message: string };
 
-/**
- * A wire's samples over one chunk; `start` is the index of the first in the
- * whole stream.
- */
+/** One output chunk, with `start` giving its first absolute sample index. */
 type ChunkSignal = Signal & { readonly start: number };
 
-/** One stretch of the stream, as `advance` hands it over. */
+/** Simulation chunk delivered by `advance`. */
 export type Chunk = {
   /** Its start and end, in seconds. */
   readonly from: number;
   readonly to: number;
   /**
-   * What every working output carried, by port key. The arrays are reused for
-   * the next chunk, so copy what you keep.
+   * Output samples indexed by port key. Arrays are reused on the next chunk;
+   * copy any data that must be retained.
    */
   readonly signals: ReadonlyMap<string, ChunkSignal>;
-  /** Readings of the blocks whose readings changed during it. */
+  /** Readings from blocks whose reported values changed in this chunk. */
   readonly readings: ReadonlyMap<string, readonly Reading[]>;
-  /** Every block's status, when a block failed as it ran. */
+  /** Updated block statuses when processing fails. */
   readonly status?: ReadonlyMap<string, BlockStatus>;
 };
 
 export type LoadResult = {
   readonly status: ReadonlyMap<string, BlockStatus>;
-  /** Blocks built afresh, rather than carried on or retuned in place. */
+  /** Ids of blocks rebuilt instead of reused or updated in place. */
   readonly rebuilt: number;
 };
 
@@ -82,7 +77,7 @@ type Node = {
   readonly sources: readonly (PortRef | undefined)[];
 };
 
-/** A block as it runs: its processor and what it was built for. */
+/** Active processor and the configuration used to build it. */
 type Running = {
   readonly kind: string;
   readonly processor: Processor<Params>;
@@ -94,7 +89,7 @@ type Running = {
   reported: string;
 };
 
-/** One step of a chunk: a lone block, or a feedback loop stepped as one. */
+/** A scheduling unit: one acyclic block or a feedback component. */
 type Step =
   | {
       readonly loop: false;
@@ -106,16 +101,16 @@ type Step =
       readonly nodes: readonly Node[];
       readonly running: readonly Running[];
       readonly rate: number;
-      /** Members by index: delays first, then the rest in an order that works. */
+      /** Member indices in execution order: delays first, then dependents. */
       readonly delays: readonly number[];
       readonly order: readonly number[];
-      /** The longest span the loop can be stepped by: its shortest delay. */
+      /** Maximum processing span, bounded by the shortest delay. */
       readonly span: number;
     };
 
 /**
- * Errors whose message is written for the user; anything else is reported as a
- * crash.
+ * Errors with user-facing messages. Other exceptions are reported as processor
+ * crashes.
  */
 const EXPLAINED = new Set(['RateError', 'BlockError']);
 
@@ -129,7 +124,7 @@ export class Stream {
   /** The fastest rate anywhere, which sets how long a chunk can be. */
   #fastest = 1;
   #running = new Map<string, Running>();
-  /** Blocks that threw as they ran, with why; they stay out until reset. */
+  /** Processing failures retained until reset. */
   readonly #faults = new Map<string, string>();
   readonly #buffers = new Map<string, Float32Array>();
   #silence = new Float32Array(0);
@@ -144,18 +139,18 @@ export class Stream {
     return this.#time;
   }
 
-  /** Runs `circuit` from where the stream is. */
+  /** Loads a circuit without rewinding simulation time. */
   load(circuit: Circuit): LoadResult {
     this.#faults.clear();
     return this.#plan(circuit);
   }
 
-  /** Pushes a block, as a button on the face does. */
+  /** Sends an external trigger to a block. */
   press(id: string): void {
     this.#running.get(id)?.processor.press?.();
   }
 
-  /** Back to time 0, with every block built afresh. */
+  /** Resets time and rebuilds every processor. */
   reset(): LoadResult | undefined {
     this.#time = 0;
     this.#running.clear();
@@ -191,7 +186,8 @@ export class Stream {
       });
     }
 
-    // Carries a block on if it was built for the same rates, retuned if need be.
+    // Reuse processors with compatible kinds and rates, applying settings
+    // updates when supported.
     const start = (
       node: Node,
       inputRates: readonly number[],
@@ -237,7 +233,8 @@ export class Stream {
         }
       }
 
-      // Idle with nothing wired in, unless it can do without all its inputs.
+      // Leave blocks idle when no input is connected unless every input is
+      // optional.
       const needed = type.inputs.filter((port) => !port.optional);
       if (
         needed.length > 0 &&
@@ -595,14 +592,11 @@ export type SimulationResult = {
   /** Every working output over the whole run, by port key. */
   readonly signals: ReadonlyMap<string, Signal>;
   readonly status: ReadonlyMap<string, BlockStatus>;
-  /** What each block that measures anything read at the end. */
+  /** Final block measurements. */
   readonly readings: ReadonlyMap<string, readonly Reading[]>;
 };
 
-/**
- * Streams a circuit for its first `seconds` and keeps every signal, for when
- * the whole run is wanted at once.
- */
+/** Runs a circuit from zero for `seconds`, collecting complete output signals. */
 export function simulate(
   lookup: BlockLookup,
   circuit: Circuit,
@@ -723,10 +717,9 @@ function isLoop(component: readonly Node[]): boolean {
 }
 
 /**
- * Order for the loop's non-delay blocks so each runs after the members feeding
- * it. Delay outputs are ready at the start of every span, so edges out of
- * delays impose no order. Returns undefined when a cycle remains, meaning some
- * loop has no delay in it.
+ * Orders non-delay members after their dependencies. Delay outputs are
+ * available at the start of each span, so their outgoing edges impose no
+ * ordering constraint. Returns undefined if a cycle without a delay remains.
  */
 function orderWithinLoop(
   component: readonly Node[],

@@ -1,7 +1,6 @@
-// Instruments: the blocks a panel face is built from. Most watch the circuit
-// or set its parameters but take no part in the simulation, so flattening
-// leaves them out; a Button is the exception, a source the face can push.
-// Each draws itself on the diagram and has a widget on the face below it.
+// Block definitions for diagram and panel instruments. Display-only
+// instruments are excluded from simulation; Buttons remain as externally
+// triggered signal sources.
 
 import { defineBlock, type Processor } from '../engine/block.ts';
 import { boolean, choice, number, text } from '../engine/params.ts';

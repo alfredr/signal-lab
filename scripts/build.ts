@@ -1,7 +1,5 @@
-// Builds the static app into dist/: compiled modules in dist/js, the page, stylesheet and fonts
-// from public/, and in dist/vendor Temml (TeX to MathML), the CMU Pronouncing Dictionary for
-// the Speech block, and the licenses of what the app is built from. The result is a
-// self-contained directory any static host can serve.
+// Builds a self-contained static site in dist/: compiled ES modules, public
+// assets, Temml, the pronunciation dictionary, and third-party licenses.
 
 import { execFileSync } from 'node:child_process';
 import {
@@ -20,7 +18,7 @@ export const root = fileURLToPath(new URL('..', import.meta.url));
 export const dist = `${root}dist`;
 export const tsc = `${root}node_modules/.bin/tsc`;
 
-/** Files taken from node_modules, by where they land in dist/vendor. */
+/** Vendor files mapped from node_modules to paths within dist/vendor. */
 const VENDOR: Record<string, string> = {
   'temml.min.js': 'temml/dist/temml.min.js',
   'Temml-Local.css': 'temml/dist/Temml-Local.css',
@@ -41,8 +39,8 @@ export function copyStatic(): void {
 }
 
 /**
- * The CMU Pronouncing Dictionary as the Speech block reads it, a word and its
- * phonemes to a line, first pronunciations only.
+ * Writes one word and its phonemes per line, using only the first
+ * pronunciation.
  */
 function writePronunciations(): void {
   const lines = Object.entries(dictionary)
@@ -52,9 +50,8 @@ function writePronunciations(): void {
 }
 
 /**
- * Lists every module in the page's head as a modulepreload, so the browser
- * fetches them all at once instead of discovering each import only after
- * loading the module that makes it.
+ * Adds modulepreload links for all compiled modules to avoid sequential import
+ * discovery in the browser.
  */
 export function preloadModules(): void {
   const modules = readdirSync(`${dist}/js`, {

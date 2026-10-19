@@ -1,7 +1,6 @@
 /**
- * The current value plus undo and redo stacks. Continuous edits such as drags
- * call preview() as they go and commit() at the end, which records the whole
- * gesture as one undo step.
+ * Undo and redo history. Continuous edits call preview() during the gesture
+ * and commit() at completion, producing one undo step.
  */
 export class History<T> {
   static readonly LIMIT = 200;
@@ -9,7 +8,7 @@ export class History<T> {
   #present: T;
   #past: T[] = [];
   #future: T[] = [];
-  /** The value before the preview in progress, if one is. */
+  /** Snapshot before the active preview gesture. */
   #anchor: { readonly value: T } | undefined;
   readonly #listeners = new Set<() => void>();
 

@@ -1,13 +1,7 @@
-// The panel face: the front of the instrument, built from the instruments on
-// the diagram. Every plot is a screen, every control a knob, switch or field,
-// every readout a display and every speaker a grille with Play; notes marked
-// for the face become labels. They sit in panes, and the panes in panels, as
-// the document has them organized; where everything goes is worked out to
-// fit, so the face rearranges itself when the dock changes shape. Panels show
-// stacked, tiled side by side as they fit, or as tabs. Arrange lets the
-// instruments, panes and panels be dragged about, renamed, added and taken
-// away. The transport runs the stream, and the selection's signal gets a
-// screen at the end, to look at before adding a plot for it.
+// Renders instruments in responsive panes and panels, with stack, tile, and
+// tab views. Arrange mode supports reordering, resizing, and naming. The
+// transport controls simulation playback; a temporary scope previews the
+// selected signal.
 
 import type { PlotView } from '../blocks/instruments.ts';
 import {
@@ -53,28 +47,28 @@ const CELL = 32;
 const GAP = 8;
 const PITCH = CELL + GAP;
 /**
- * A knob's own size, the most it grows to, and the room around it for its
- * label, rim and range, in pixels.
+ * Default and maximum knob diameters, plus space for labels, rims, and ranges,
+ * in pixels.
  */
 const KNOB_SIZE = 60;
 const KNOB_LARGEST = 96;
 const KNOB_MARGIN = { w: 28, h: 52 };
-/** How readily a pane takes spare width, by the most stretchable it holds. */
+/** Relative flex growth by instrument type. */
 const STRETCH = { screen: 100, display: 20, knob: 1 } as const;
-/** A pane's padding and border across, around its instruments. */
+/** Combined horizontal pane padding and borders. */
 const PANE_EDGES = 22;
 /**
- * The gap between panes, and a panel's padding and border across: wider than
- * the gaps inside a pane, so what belongs together looks it.
+ * Pane gap and combined horizontal panel padding and borders. Larger gaps
+ * distinguish panes from the instruments within them.
  */
 const PANE_GAP = 10;
 const PANEL_EDGES = 14;
-/** The widest a pane would like to be, in cells. */
+/** Maximum preferred pane width, in grid cells. */
 const WIDEST = 24;
 
 /**
- * How fast the stream can run against the clock; speakers play at that speed,
- * like a tape.
+ * Playback speeds relative to real time. Audio playback uses the same rate
+ * multiplier.
  */
 const SPEEDS: readonly (readonly [number, string])[] = [
   [8, '8×'],
@@ -92,7 +86,7 @@ export type Transport = {
   /** Whether the stream is running. */
   readonly running: boolean;
   readonly speed: number;
-  /** Whether the simulation can't keep up with the speed asked for. */
+  /** Whether simulation throughput is below the requested playback speed. */
   readonly behind: boolean;
 };
 
@@ -103,7 +97,7 @@ export function speedLabel(speed: number): string {
   );
 }
 
-/** A time on the stream's clock: seconds, then minutes and seconds. */
+/** Formats stream time as seconds or minutes and seconds. */
 export function clockTime(t: number): string {
   if (t < 60) {
     return `${t.toFixed(1)} s`;
@@ -113,7 +107,7 @@ export function clockTime(t: number): string {
   return `${minutes}:${(t - 60 * minutes).toFixed(1).padStart(4, '0')}`;
 }
 
-/** The selection's signal, for its screen. */
+/** Selected signal and its temporary scope state. */
 export type ScopeState = {
   readonly at: PortRef;
   readonly title: string;
@@ -142,15 +136,12 @@ export type FaceEvents = {
   listen(at: PortRef): void;
   /** Starts or pauses the stream. */
   run(): void;
-  /** Takes the stream back to time 0. */
+  /** Resets the stream to time zero. */
   reset(): void;
   speed(speed: number): void;
 };
 
-/**
- * How the panels show: one under another, side by side as they fit, or as
- * tabs.
- */
+/** Panel presentation: vertical stack, wrapping tiles, or tabs. */
 type Mode = 'stack' | 'tile' | 'tabs';
 
 const MODES: readonly (readonly [Mode, string, string])[] = [
@@ -159,7 +150,7 @@ const MODES: readonly (readonly [Mode, string, string])[] = [
   ['tabs', 'Tabs', 'One panel at a time'],
 ];
 
-/** This browser's way of showing the panels, and the tab last shown. */
+/** Browser-local panel presentation and active tab. */
 type View = { readonly mode: Mode; readonly tab: string | undefined };
 
 const VIEW_KEY = 'signal-lab:panels';
@@ -201,7 +192,7 @@ type PanelView = {
   readonly remove: HTMLButtonElement;
 };
 
-/** Something being dragged while arranging, and where it would land. */
+/** Active arrangement gesture and its proposed drop target. */
 type Drag =
   | {
       readonly kind: 'instrument' | 'pane' | 'panel';
@@ -216,7 +207,7 @@ type Drag =
       readonly y: number;
       readonly w: number;
       readonly h: number;
-      /** The document before, to go back to if the resize is called off. */
+      /** Document snapshot restored when the resize is canceled. */
       readonly before: LabDocument;
     };
 
@@ -232,9 +223,9 @@ const tool = (label: string, title: string) =>
   html('button', { type: 'button', class: 'small', title }, label);
 
 /**
- * Of `elements`, the one nearest the point, and whether the point is past it:
- * below it, or beside it and past its middle, across where they flow in
- * `rows`, otherwise down. `beside` says whether the point is level with it.
+ * Finds the nearest element and the insertion side of its midpoint. Row
+ * layouts use the horizontal midpoint when the pointer overlaps the element
+ * vertically; otherwise they use the vertical midpoint.
  */
 function nearest(
   elements: readonly HTMLElement[],
@@ -275,7 +266,10 @@ function nearest(
   return best;
 }
 
-/** Puts `children` in `parent`, in order, moving nothing already in place. */
+/**
+ * Updates child order only when it differs, avoiding unnecessary DOM
+ * replacement.
+ */
 function setChildren(parent: Element, children: readonly Element[]): void {
   const now = parent.children;
   if (
@@ -346,7 +340,7 @@ export class Face {
     },
     'Reset',
   );
-  /** Each pane's instruments, to lay out again when its size changes. */
+  /** Cached pane contents used when resizing. */
   readonly #laid = new WeakMap<
     HTMLElement,
     {
@@ -371,7 +365,7 @@ export class Face {
   constructor(
     host: HTMLElement,
     events: FaceEvents,
-    /** Buttons for the header, after Arrange: where the panel goes. */
+    /** Header actions placed after Arrange, such as docking controls. */
     actions: readonly HTMLElement[] = [],
   ) {
     this.#events = events;
@@ -459,7 +453,7 @@ export class Face {
     this.#panelsBox.dataset.mode = mode;
     this.#panelsBox.classList.toggle('arranging', this.#arranging);
 
-    // The tabs, with more than one panel to choose from.
+    // Show tab navigation only when multiple panels are available.
     this.#tabs.hidden = !tabs || panels.length < 2;
     this.#tabs.replaceChildren(
       ...panels.map((panel) => {
@@ -498,7 +492,7 @@ export class Face {
         view.panes,
         panes.map((p) => p.element),
       );
-      // Tiled, a panel asks for room for its panes side by side.
+      // A tiled panel requests enough width for its panes to sit side by side.
       view.element.style.flexBasis =
         mode === 'tile'
           ? `${panes.reduce((sum, p) => sum + p.basis + PANE_GAP, -PANE_GAP) + PANEL_EDGES}px`
@@ -554,7 +548,7 @@ export class Face {
       this.#fit(grid);
     }
 
-    // What is no longer shown goes.
+    // Remove views that are no longer displayed.
     for (const [id, frame] of this.#frames) {
       if (!live.has(id)) {
         frame.element.remove();
@@ -608,7 +602,7 @@ export class Face {
     this.#reset.disabled = time === 0 && !running;
   }
 
-  /** Lays out a pane and its instruments; returns the width it would like. */
+  /** Renders a pane and returns its preferred width and flex growth. */
   #renderPane(
     pane: FacePane,
     model: FaceModel,
@@ -627,7 +621,7 @@ export class Face {
       view.name.value = pane.title;
     }
 
-    // A title that only repeats one of its instruments' names says nothing.
+    // Hide a pane title that duplicates an instrument name.
     const said = (name: string | undefined) =>
       name?.trim().toLowerCase() === pane.title.trim().toLowerCase();
     view.title.hidden = pane.entries.some((entry) =>
@@ -662,8 +656,7 @@ export class Face {
       ? paneWidth(pieces, WIDEST * PITCH - GAP, PITCH) + PANE_EDGES
       : 8 * PITCH;
     view.element.style.flexBasis = `${basis}px`;
-    // Spare width goes to what stretches well: screens most, displays some,
-    // and a pane of knobs stays thin unless nothing beside it stretches.
+    // Give spare width primarily to screen panes, then displays, then knobs.
     const give = pieces.some((p) => p.kind === 'screen')
       ? STRETCH.screen
       : pieces.some((p) => p.kind === 'display')
@@ -674,7 +667,7 @@ export class Face {
     return { element: view.element, basis, give };
   }
 
-  /** An instrument's own size in cells, and how it takes to a pane. */
+  /** Default grid size and layout category for an instrument. */
   #sizeOf(
     model: FaceModel,
     item: FaceItem,
@@ -702,9 +695,8 @@ export class Face {
   }
 
   /**
-   * Fits a pane's instruments to its width: as many columns as there is room
-   * for, and then no more than they need to stay in as few rows, in the middle
-   * of the pane; each instrument across as many as it asks, or as there are.
+   * Fits instruments to the pane's current dimensions and sets the minimum
+   * height required by the layout.
    */
   #fit(grid: HTMLElement): void {
     const laid = this.#laid.get(grid);
@@ -726,7 +718,7 @@ export class Face {
       style.width = `${Math.round(box.w)}px`;
       style.height = `${Math.round(box.h)}px`;
 
-      // A knob given more room than its own grows into it.
+      // Grow knobs within their size limits when space permits.
       if (laid.pieces[i]!.kind === 'knob') {
         const size = Math.min(box.w - KNOB_MARGIN.w, box.h - KNOB_MARGIN.h);
         style.setProperty(
@@ -747,7 +739,7 @@ export class Face {
     try {
       localStorage.setItem(VIEW_KEY, JSON.stringify(this.#view));
     } catch {
-      // Without storage the choice lasts as long as the page.
+      // Keep the choice for this session if storage is unavailable.
     }
   }
 
@@ -771,7 +763,7 @@ export class Face {
     }
   }
 
-  /** Applies a change to the document, if there is one. */
+  /** Applies an edit to the current document. */
   #change(edit: (doc: LabDocument) => LabDocument, mode: ChangeMode): void {
     const doc = this.#model?.doc;
     if (doc) {
@@ -953,8 +945,8 @@ export class Face {
   }
 
   /**
-   * Makes `handle` start a drag of what `start` says, while arranging: a bar
-   * shows where it would land, and letting go puts it there.
+   * Enables arrangement dragging from `handle`. A marker previews the
+   * insertion position; releasing commits the move.
    */
   #dragFrom(handle: HTMLElement, start: () => Drag): void {
     handle.addEventListener('pointerdown', (event) => {
@@ -978,7 +970,7 @@ export class Face {
     handle.addEventListener('pointercancel', () => this.#endDrag(false));
   }
 
-  /** Works out where what is dragged would land, and shows it. */
+  /** Updates the drop target and insertion marker. */
   #dragOver(x: number, y: number): void {
     const drag = this.#drag;
     if (!drag || drag.kind === 'resize') {
@@ -1025,7 +1017,8 @@ export class Face {
       index: near ? near.index + (near.after ? 1 : 0) : 0,
     };
 
-    // A bar beside the one it would go next to, or along the empty box.
+    // Place the insertion marker beside the nearest item or at the empty
+    // container edge.
     const origin = this.#panelsBox.getBoundingClientRect();
     const across = near ? near.beside : rows;
     const edge = near
@@ -1064,8 +1057,8 @@ export class Face {
       return;
     }
 
-    // A resize shows as it goes; letting go keeps it as one step to undo,
-    // and Escape puts back what was there, leaving nothing to undo.
+    // Commit a resize as one undo step, or restore the original document on
+    // cancellation.
     if (drag.kind === 'resize') {
       this.#change((doc) => (drop ? doc : drag.before), 'commit');
       return;

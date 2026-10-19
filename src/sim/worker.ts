@@ -1,7 +1,6 @@
-// The simulation worker. It owns the stream, so every block's state lives here,
-// and it keeps the latest stretch of every port so a port the page starts to
-// watch arrives with some history. The page only ever receives the ports it
-// watches.
+// Owns the simulation stream and processor state. Retains recent output
+// history so newly watched ports can return existing samples; only watched
+// ports are sent to the page.
 
 import { addClip } from '../blocks/clips.ts';
 import { blockType } from '../blocks/index.ts';
@@ -70,9 +69,8 @@ const histories = new Map<string, History>();
 let fetchingDictionary = false;
 
 /**
- * Fetches the pronouncing dictionary the first time a document speaks, then
- * starts the Speech blocks that were waiting for it. If it can't be had, they
- * sound words out by rule instead.
+ * Loads the pronunciation dictionary on first use and restarts waiting Speech
+ * blocks. If loading fails, speech falls back to letter-to-sound rules.
  */
 function fetchDictionary(): void {
   if (fetchingDictionary || pronouncingDictionary()) {

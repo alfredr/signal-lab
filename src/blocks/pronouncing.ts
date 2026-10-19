@@ -1,6 +1,6 @@
-// The CMU Pronouncing Dictionary for the Speech block, once the worker has
-// fetched it. It is big, so it loads only for documents that speak; until it
-// does, Speech blocks wait, and without it they sound words out by rule.
+// Pronunciation dictionary shared by Speech blocks. The worker loads it on
+// demand; blocks wait during loading and use letter-to-sound rules if it is
+// unavailable.
 
 import type { Dictionary } from '../dsp/speech/english.ts';
 
