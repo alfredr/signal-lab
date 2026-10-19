@@ -868,12 +868,11 @@ button.push:active, button.push.pressed {
   .face { overflow: auto; }
 }
 
-/* On a touch screen, fields take text at 16px: iOS zooms the page in on any
-   smaller one when it is tapped. A knob's value only takes typing after a
-   double-click, so it stays small until then. */
+/* On a touch screen, every field takes text at 16px: iOS zooms the page in on
+   any smaller one when it is tapped. Fields are sized in many places, each
+   more specific than a rule for all of them, so this one is !important. A
+   knob's value takes typing only after a double-click, and keeps its size
+   in the dial until then. */
 @media (pointer: coarse) {
-  input, select, textarea, input.palette-filter { font-size: 16px; }
-  input.knob-value, .face-body input.knob-value { font-size: 10px; }
-  .face-body input.knob-value.long { font-size: 9px; }
-  .knob-control.typing input.knob-value, .face-body .knob-control.typing input.knob-value { font-size: 16px; }
+  input:not(.knob-value), select, textarea, .knob-control.typing input.knob-value { font-size: 16px !important; }
 }
