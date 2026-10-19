@@ -36,7 +36,7 @@ import {
   wiredOutside,
   type Outside,
 } from '../model/subsystems.ts';
-import { svg } from './dom.ts';
+import { html, svg } from './dom.ts';
 import { hasIcon } from './drawings.ts';
 import {
   drawingOf,
@@ -217,11 +217,14 @@ function readingSummary(
     : `${first.label} ${formatReading(first)}`;
 }
 
-/** An instrument's place on the diagram, kept between redraws. */
+/**
+ * An instrument's place on the diagram, kept between redraws: its outline and
+ * ports in the drawing, and its widget in the layer over it.
+ */
 type InstrumentNode = {
   readonly group: SVGGElement;
   readonly body: SVGRectElement;
-  readonly face: SVGForeignObjectElement;
+  readonly face: HTMLElement;
   readonly ports: SVGGElement;
 };
 
@@ -236,6 +239,8 @@ export class DiagramEditor {
   readonly #outside: SVGGElement;
   readonly #instruments: SVGGElement;
   readonly #overlay: SVGGElement;
+  /** Where instruments' widgets go: over the drawing, moved with it. */
+  readonly #plane = html('div', { class: 'instrument-plane' });
   /** Instrument nodes by full id. */
   readonly #nodes = new Map<string, InstrumentNode>();
   /**
@@ -316,7 +321,13 @@ export class DiagramEditor {
       this.#instruments,
       this.#overlay,
     );
-    host.append(this.element);
+    // Render instrument widgets in a separate HTML overlay that shares the SVG
+    // transform. This avoids WebKit positioning errors for canvas and
+    // scrollable content inside foreignObject.
+    host.append(
+      this.element,
+      html('div', { class: 'instrument-layer' }, this.#plane),
+    );
 
     this.element.addEventListener('pointerdown', (event) =>
       this.#pointerDown(event),
@@ -476,10 +487,15 @@ export class DiagramEditor {
         ),
       );
 
-      for (const element of [node.body, node.face]) {
-        element.setAttribute('width', String(layout.width));
-        element.setAttribute('height', String(layout.height));
-      }
+      node.body.setAttribute('width', String(layout.width));
+      node.body.setAttribute('height', String(layout.height));
+      node.face.dataset.block = block.id;
+      Object.assign(node.face.style, {
+        left: `${block.x}px`,
+        top: `${block.y}px`,
+        width: `${layout.width}px`,
+        height: `${layout.height}px`,
+      });
 
       const widget = model.widgets.get('diagram', { id, path, block });
       if (node.face.firstChild !== widget) {
@@ -513,6 +529,7 @@ export class DiagramEditor {
     for (const [id, node] of this.#nodes) {
       if (!live.has(id)) {
         node.group.remove();
+        node.face.remove();
         this.#nodes.delete(id);
       }
     }
@@ -524,12 +541,13 @@ export class DiagramEditor {
     let node = this.#nodes.get(id);
     if (!node) {
       const body = svg('rect', { class: 'body', rx: 8 });
-      const face = svg('foreignObject', { class: 'instrument-face' });
+      const face = html('div', { class: 'instrument-face' });
       const ports = svg('g', { class: 'ports' });
-      const group = svg('g', {}, body, face, ports);
+      const group = svg('g', {}, body, ports);
       node = { group, body, face, ports };
       this.#nodes.set(id, node);
       this.#instruments.append(group);
+      this.#plane.append(face);
     }
 
     return node;
@@ -1220,6 +1238,8 @@ export class DiagramEditor {
     for (const [name, value] of Object.entries(box)) {
       this.#grid.setAttribute(name, String(value));
     }
+
+    this.#plane.style.transform = `scale(${scale}) translate(${-x}px, ${-y}px)`;
   }
 
   #inputUnder(clientX: number, clientY: number): PortRef | undefined {
