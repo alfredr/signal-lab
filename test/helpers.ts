@@ -3,7 +3,11 @@ import type { Circuit } from '../src/engine/circuit.ts';
 import type { StoredParams } from '../src/engine/params.ts';
 import { seededNoise } from '../src/engine/random.ts';
 import type { Signal } from '../src/engine/signal.ts';
-import { Simulator, type SimulationResult } from '../src/engine/simulator.ts';
+import {
+  simulate,
+  Stream,
+  type SimulationResult,
+} from '../src/engine/simulator.ts';
 import { ref } from '../src/model/build.ts';
 import type { LabDocument } from '../src/model/document.ts';
 import {
@@ -16,13 +20,23 @@ type BlockSpec = readonly [id: string, kind: string, params?: StoredParams];
 /** A wire written as ["source:port", "target:port"]. */
 type WireSpec = readonly [from: string, to: string];
 
+/** A circuit and how long to run it, in seconds. */
+type Run = { readonly circuit: Circuit; readonly seconds: number };
+
 export function circuit(
-  duration: number,
+  seconds: number,
+  blocks: readonly BlockSpec[],
+  wires: readonly WireSpec[],
+): Run {
+  return { seconds, circuit: plain(blocks, wires) };
+}
+
+/** A circuit from blocks and wires written briefly. */
+export function plain(
   blocks: readonly BlockSpec[],
   wires: readonly WireSpec[],
 ): Circuit {
   return {
-    duration,
     blocks: blocks.map(([id, kind, params = {}]) => ({
       id,
       kind,
@@ -38,17 +52,22 @@ export function circuit(
   };
 }
 
-export function simulator(): Simulator {
-  return new Simulator(blockType);
+/** Streams a circuit for its seconds, keeping every signal. */
+export function run({ circuit, seconds }: Run): SimulationResult {
+  return simulate(blockType, circuit, seconds);
+}
+
+export function stream(): Stream {
+  return new Stream(blockType);
 }
 
 /**
- * Simulates a document the way the app does: flattened, with statuses for
- * every block.
+ * Simulates the first `seconds` of a document the way the app does: flattened,
+ * with statuses for every block.
  */
-export function simulateDocument(doc: LabDocument) {
+export function simulateDocument(doc: LabDocument, seconds = 1) {
   const flat = flatten(doc);
-  const result = simulator().run(flat.circuit);
+  const result = simulate(blockType, flat.circuit, seconds);
   return {
     signals: signalsWithAliases(result.signals, flat.aliases),
     status: blockStatuses(doc, flat, result.status),

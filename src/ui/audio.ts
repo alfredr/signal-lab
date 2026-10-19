@@ -1,138 +1,260 @@
-// Listening to any signal in the diagram. Playback loops, and when the simulation produces a
-// new version of the signal being played it is swapped in at the same point in the loop, so
-// knob changes are heard as they happen.
+// Listening to the stream. A port being listened to plays as the stream
+// reaches it: each new stretch is resampled to the audio device's rate and
+// scheduled right after the last, so the sound runs on without gaps, and while
+// anything plays the playhead follows the audio clock. It plays at the
+// stream's speed the way a tape does, so at an eighth of the speed it sounds
+// three octaves lower. Turning a speaker on or off only connects or
+// disconnects it: time goes on either way. Levels ride a slow automatic gain,
+// so a whisper and a carrier are both comfortable, with peaks rounded off by
+// tanh.
 
-import { downsample, upsample } from '../dsp/resample.ts';
-import type { Signal } from '../engine/signal.ts';
+import { Interpolator } from '../dsp/resample.ts';
+import type { Trace } from './live.ts';
 
-/** Sample rates every browser's AudioBuffer accepts. */
-const LOWEST_RATE = 8000;
-const HIGHEST_RATE = 96000;
-const FADE_SECONDS = 0.03;
+/** Seconds of sound scheduled ahead of the audio clock, at most. */
+const AHEAD = 0.4;
+/** The earliest a new sound can start, in seconds from now. */
+const MARGIN = 0.05;
+/** The shortest stretch worth scheduling on its own, in seconds. */
+const SHORTEST = 0.02;
+const FADE = 0.03;
 
-type Voice = {
-  readonly key: string;
-  readonly data: Float32Array;
-  readonly source: AudioBufferSourceNode;
-  readonly gain: GainNode;
-  readonly startedAt: number;
-  readonly duration: number;
+type Anchor = {
+  readonly audio: number;
+  readonly stream: number;
+  readonly speed: number;
 };
 
-/**
- * The signal at a rate the browser can play: resampled by a whole factor if it
- * is out of range.
- */
-function playable(signal: Signal): Signal {
-  if (signal.rate > HIGHEST_RATE) {
-    const factor = Math.ceil(signal.rate / HIGHEST_RATE);
-    const data = new Float32Array(Math.floor(signal.data.length / factor));
-    downsample(signal.data, factor, data);
-    return { rate: signal.rate / factor, data };
-  }
+type Voice = {
+  readonly gain: GainNode;
+  /** Sounds scheduled and not yet over. */
+  readonly sources: Set<AudioBufferSourceNode>;
+  /** The next audio frame to schedule, counted from the anchor. */
+  frame: number;
+  /** The automatic gain, 0 until it has heard something. */
+  level: number;
+};
 
-  if (signal.rate < LOWEST_RATE) {
-    const factor = Math.ceil(LOWEST_RATE / signal.rate);
-    const data = new Float32Array(signal.data.length * factor);
-    upsample(signal.data, factor, data);
-    return { rate: signal.rate * factor, data };
-  }
-
-  return signal;
-}
-
-/**
- * An audio buffer for the signal at a comfortable level: scaled up or down to
- * a steady loudness, with peaks rounded off by tanh and short fades at the
- * ends so the loop doesn't click.
- */
-function toBuffer(context: AudioContext, signal: Signal): AudioBuffer {
-  const { data, rate } = playable(signal);
-  let peak = 0;
-  let sum = 0;
-  for (let i = 0; i < data.length; i++) {
-    peak = Math.max(peak, Math.abs(data[i]));
-    sum += data[i] * data[i];
-  }
-
-  const rms = Math.sqrt(sum / Math.max(1, data.length));
-  const gain = peak > 0 ? Math.min(0.8 / peak, 0.25 / rms) : 0;
-  const buffer = context.createBuffer(1, Math.max(1, data.length), rate);
-  const channel = buffer.getChannelData(0);
-  const fade = Math.min(Math.round(0.01 * rate), Math.floor(data.length / 2));
-  for (let i = 0; i < data.length; i++) {
-    const edge = Math.min(
-      1,
-      i / Math.max(1, fade),
-      (data.length - 1 - i) / Math.max(1, fade),
-    );
-    channel[i] = Math.tanh(data[i] * gain) * edge;
-  }
-
-  return buffer;
-}
-
-export class Player {
+export class Monitor {
   #context: AudioContext | undefined;
-  #voice: Voice | undefined;
+  readonly #voices = new Map<string, Voice>();
+  /**
+   * Readers that filter out what the speaker can't play before it folds back:
+   * a long kernel, and a shorter one for reading very sparsely, as a fast tape
+   * of a radio-frequency signal does, where the long one costs too much.
+   */
+  readonly #fine = new Interpolator(8);
+  readonly #coarse = new Interpolator(4);
+  /**
+   * While sound runs, audio time `audio` plays stream time `stream`, and each
+   * second of audio plays `speed` seconds of stream.
+   */
+  #anchor: Anchor | undefined;
   readonly #listeners = new Set<() => void>();
 
-  /** Key of the port being played, if any. */
-  get playing(): string | undefined {
-    return this.#voice?.key;
+  /** Port keys being listened to. */
+  get listening(): ReadonlySet<string> {
+    return new Set(this.#voices.keys());
   }
 
-  /**
-   * Where playback is in the signal, in seconds, for the playhead to follow;
-   * undefined when nothing plays.
-   */
-  position(): number | undefined {
-    const voice = this.#voice;
-    if (!voice || !this.#context || voice.duration <= 0) {
-      return undefined;
+  /** Starts or stops listening to a port. */
+  toggle(key: string): void {
+    const voice = this.#voices.get(key);
+    if (voice) {
+      this.#silence(voice);
+      this.#voices.delete(key);
+    } else {
+      const context = this.#ensureContext();
+      const gain = context.createGain();
+      gain.connect(context.destination);
+      this.#voices.set(key, {
+        gain,
+        sources: new Set(),
+        frame: this.#soonest(),
+        level: 0,
+      });
     }
 
-    return (this.#context.currentTime - voice.startedAt) % voice.duration;
-  }
+    if (!this.#voices.size) {
+      this.#anchor = undefined;
+    }
 
-  play(key: string, signal: Signal): void {
-    this.#start(key, signal, 0);
     this.#notify();
   }
 
-  stop(): void {
-    this.#fadeOut(this.#voice);
-    this.#voice = undefined;
-    this.#notify();
+  /** Stops listening to everything. */
+  clear(): void {
+    for (const key of [...this.#voices.keys()]) {
+      this.toggle(key);
+    }
+  }
+
+  /** The stream time the audio clock says it is, while sound runs. */
+  clock(): number | undefined {
+    const context = this.#context;
+    const anchor = this.#anchor;
+    return anchor && context
+      ? anchor.stream + (context.currentTime - anchor.audio) * anchor.speed
+      : undefined;
   }
 
   /**
-   * Swaps in the latest version of the signal being played; stops if it no
-   * longer exists.
+   * Keeps the sound going: schedules what has arrived of each port listened
+   * to, from playhead time `t` on at `speed` while `running`, and falls silent
+   * otherwise. A new speed starts the sound again from `t`.
    */
-  refresh(signal: Signal | undefined): void {
-    const voice = this.#voice;
-    if (!voice || voice.data === signal?.data) {
+  feed(
+    traces: ReadonlyMap<string, Trace>,
+    t: number,
+    running: boolean,
+    speed: number,
+  ): void {
+    const context = this.#context;
+    if (!running || !this.#voices.size || context?.state !== 'running') {
+      this.halt();
       return;
     }
 
-    if (!signal) {
-      this.stop();
+    if (this.#anchor && this.#anchor.speed !== speed) {
+      this.halt();
+    }
+
+    if (!this.#anchor) {
+      this.#anchor = { audio: context.currentTime, stream: t, speed };
+
+      for (const voice of this.#voices.values()) {
+        const now = context.currentTime;
+        voice.gain.gain.cancelScheduledValues(now);
+        voice.gain.gain.setValueAtTime(0, now);
+        voice.gain.gain.linearRampToValueAtTime(1, now + FADE);
+        voice.frame = this.#soonest();
+      }
+    }
+
+    for (const [key, voice] of this.#voices) {
+      const trace = traces.get(key);
+      if (trace) {
+        this.#schedule(context, this.#anchor, voice, trace);
+      }
+    }
+  }
+
+  /** Stops the sound, keeping the ports listened to for when it starts again. */
+  halt(): void {
+    if (!this.#anchor) {
       return;
     }
 
-    const context = this.#ensureContext();
-    const elapsed = context.currentTime - voice.startedAt;
-    this.#start(
-      voice.key,
-      signal,
-      voice.duration > 0 ? elapsed % voice.duration : 0,
-    );
+    this.#anchor = undefined;
+
+    for (const voice of this.#voices.values()) {
+      this.#silence(voice);
+    }
   }
 
   subscribe(listener: () => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  /** The first frame that can still start in time. */
+  #soonest(): number {
+    const context = this.#context;
+    const anchor = this.#anchor;
+    return context && anchor
+      ? Math.ceil(
+          (context.currentTime + MARGIN - anchor.audio) * context.sampleRate,
+        )
+      : 0;
+  }
+
+  #schedule(
+    context: AudioContext,
+    anchor: Anchor,
+    voice: Voice,
+    trace: Trace,
+  ): void {
+    const out = context.sampleRate;
+    const rate = trace.rate;
+    // Samples of the stream per frame of sound.
+    const ratio = (rate * anchor.speed) / out;
+    const reader = ratio > 16 ? this.#coarse : this.#fine;
+    const reach = reader.reach(ratio);
+    voice.frame = Math.max(voice.frame, this.#soonest());
+    // As far as the clock allows, and as far as there are samples to read.
+    const last = Math.min(
+      Math.floor((context.currentTime + AHEAD - anchor.audio) * out),
+      Math.floor(
+        (((trace.end - reach - 1) / rate - anchor.stream) / anchor.speed) *
+          out,
+      ),
+    );
+    const frames = last - voice.frame;
+    if (frames < SHORTEST * out) {
+      return;
+    }
+
+    // Where in the stream each frame plays, in samples.
+    const at = (frame: number) =>
+      (anchor.stream + (frame / out) * anchor.speed) * rate;
+    const first = Math.floor(at(voice.frame)) - reach;
+    const samples = trace.read(first, Math.ceil(at(last)) + reach + 1);
+    const buffer = context.createBuffer(1, frames, out);
+    const channel = buffer.getChannelData(0);
+    for (let k = 0; k < frames; k++) {
+      channel[k] = reader.at(samples, at(voice.frame + k) - first, ratio);
+    }
+
+    // The level is set by the signal on the wire, not by what is left of it
+    // to hear, so a carrier far above hearing plays as near silence rather
+    // than having its faint remains turned up.
+    let peak = 0;
+    let sum = 0;
+    for (let i = reach; i < samples.length - reach; i++) {
+      peak = Math.max(peak, Math.abs(samples[i]!));
+      sum += samples[i]! * samples[i]!;
+    }
+
+    const rms = Math.sqrt(sum / Math.max(1, samples.length - 2 * reach));
+    if (peak > 0) {
+      const wanted = Math.min(0.8 / peak, 0.25 / rms);
+      // Quick to duck under something loud, slow to bring the level back up.
+      voice.level =
+        voice.level === 0 || voice.level * peak > 1.5
+          ? wanted
+          : voice.level + (wanted - voice.level) * 0.1;
+    }
+
+    for (let k = 0; k < frames; k++) {
+      channel[k] = Math.tanh(channel[k] * voice.level);
+    }
+
+    const source = context.createBufferSource();
+    source.buffer = buffer;
+    source.connect(voice.gain);
+    source.addEventListener('ended', () => voice.sources.delete(source));
+    source.start(anchor.audio + voice.frame / out);
+    voice.sources.add(source);
+    voice.frame = last;
+  }
+
+  /** Fades a voice out and drops what it had scheduled. */
+  #silence(voice: Voice): void {
+    const context = this.#context;
+    if (!context) {
+      return;
+    }
+
+    const now = context.currentTime;
+    voice.gain.gain.cancelScheduledValues(now);
+    voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
+    voice.gain.gain.linearRampToValueAtTime(0, now + FADE);
+
+    for (const source of voice.sources) {
+      source.stop(now + FADE + 0.01);
+    }
+
+    voice.sources.clear();
   }
 
   #ensureContext(): AudioContext {
@@ -143,42 +265,6 @@ export class Player {
     }
 
     return this.#context;
-  }
-
-  #start(key: string, signal: Signal, offset: number): void {
-    const context = this.#ensureContext();
-    const buffer = toBuffer(context, signal);
-    const source = context.createBufferSource();
-    const gain = context.createGain();
-    source.buffer = buffer;
-    source.loop = true;
-    source.connect(gain).connect(context.destination);
-    const now = context.currentTime;
-    gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(1, now + FADE_SECONDS);
-    const position = buffer.duration > 0 ? offset % buffer.duration : 0;
-    source.start(now, position);
-    this.#fadeOut(this.#voice);
-    this.#voice = {
-      key,
-      data: signal.data,
-      source,
-      gain,
-      startedAt: now - position,
-      duration: buffer.duration,
-    };
-  }
-
-  #fadeOut(voice: Voice | undefined): void {
-    if (!voice || !this.#context) {
-      return;
-    }
-
-    const now = this.#context.currentTime;
-    voice.gain.gain.cancelScheduledValues(now);
-    voice.gain.gain.setValueAtTime(voice.gain.gain.value, now);
-    voice.gain.gain.linearRampToValueAtTime(0, now + FADE_SECONDS);
-    voice.source.stop(now + FADE_SECONDS + 0.01);
   }
 
   #notify(): void {

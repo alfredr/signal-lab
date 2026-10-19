@@ -1,22 +1,22 @@
-// Runs a circuit over its simulation window.
+// Runs a circuit as a stream, forward in time from 0 for as long as it is asked to.
 //
-// Time model: every wire carries a whole-window signal at its own sample rate. Blocks are
-// causal stream processors. The simulator splits the block graph into strongly connected
-// components and runs them upstream first. A lone block runs in a single call over the whole
-// window. A feedback loop (a component with a cycle) must contain a delay, and its blocks are
-// stepped together in chunks no longer than the shortest delay, so every value a block reads
-// already exists. Loops run at a single sample rate. Processors index the whole-window arrays
-// directly, so stepping a loop one sample at a time allocates nothing.
+// Time model: the stream advances in chunks of a few tens of milliseconds. In each chunk every
+// wire carries the samples of that stretch of time at its own sample rate, and blocks are causal
+// processors that keep their state from one chunk to the next. The stream splits the block graph
+// into strongly connected components and runs them upstream first. A lone block takes a whole
+// chunk in one call. A feedback loop (a component with a cycle) must contain a delay, and its
+// blocks are stepped together in spans no longer than the shortest delay, so every value a block
+// reads already exists. Loops run at a single sample rate.
 //
-// Results are cached per block, keyed by a fingerprint of the block's settings and everything
-// upstream of it, so changing one knob recomputes only what sits downstream of it.
+// Loading a changed circuit keeps the stream where it is. A block whose kind and rates are
+// unchanged keeps its processor and takes new settings in place where it can, so turning a knob
+// changes what happens from then on and leaves the past alone.
 
 import {
   isDelayProcessor,
   RateError,
   sharedRate,
   type BlockType,
-  type DelayProcessor,
   type Processor,
   type Reading,
 } from './block.ts';
@@ -36,74 +36,153 @@ export type BlockStatus =
   | { readonly state: 'idle'; readonly reason: string }
   | { readonly state: 'error'; readonly message: string };
 
-export type SimulationResult = {
-  /** Signals by output port, keyed with portKey. */
-  readonly signals: ReadonlyMap<string, Signal>;
-  readonly status: ReadonlyMap<string, BlockStatus>;
-  /** What each block measured, for blocks that measure anything. */
+/**
+ * A wire's samples over one chunk; `start` is the index of the first in the
+ * whole stream.
+ */
+type ChunkSignal = Signal & { readonly start: number };
+
+/** One stretch of the stream, as `advance` hands it over. */
+export type Chunk = {
+  /** Its start and end, in seconds. */
+  readonly from: number;
+  readonly to: number;
+  /**
+   * What every working output carried, by port key. The arrays are reused for
+   * the next chunk, so copy what you keep.
+   */
+  readonly signals: ReadonlyMap<string, ChunkSignal>;
+  /** Readings of the blocks whose readings changed during it. */
   readonly readings: ReadonlyMap<string, readonly Reading[]>;
-  /** Blocks computed afresh this run, rather than reused from the last one. */
-  readonly recomputed: number;
+  /** Every block's status, when a block failed as it ran. */
+  readonly status?: ReadonlyMap<string, BlockStatus>;
+};
+
+export type LoadResult = {
+  readonly status: ReadonlyMap<string, BlockStatus>;
+  /** Blocks built afresh, rather than carried on or retuned in place. */
+  readonly rebuilt: number;
 };
 
 export type BlockLookup = (kind: string) => BlockType | undefined;
 
-/** The most samples held across all wires at once: 64 M floats, 256 MB. */
-const SAMPLE_BUDGET = 64_000_000;
+/** The longest chunk, in seconds and in samples on the fastest wire. */
+const CHUNK_SECONDS = 1 / 32;
+const CHUNK_SAMPLES = 32768;
+
+type Params = ParamValues<ParamSpecs>;
 
 type Node = {
   readonly id: string;
   /** The user's name for the block, or its type label. */
   readonly label: string;
   readonly type: BlockType;
-  readonly params: ParamValues<ParamSpecs>;
+  readonly params: Params;
   /** The output feeding each input port, if that input is wired. */
   readonly sources: readonly (PortRef | undefined)[];
-  /** Fingerprint of the block's own settings. */
-  readonly local: string;
 };
 
-type Outcome = {
-  readonly status: BlockStatus;
-  readonly outputs: readonly Signal[];
-  readonly readings?: readonly Reading[];
+/** A block as it runs: its processor and what it was built for. */
+type Running = {
+  readonly kind: string;
+  readonly processor: Processor<Params>;
+  readonly inputRates: readonly number[];
+  readonly outputRates: readonly number[];
+  /** Its settings, as JSON. */
+  params: string;
+  /** Its readings as last reported, as JSON. */
+  reported: string;
 };
 
-type CacheEntry = Outcome & {
-  readonly signature: number;
-};
-
-type Budget = {
-  remaining: number;
-};
-
-class BudgetError extends Error {
-  override readonly name = 'BudgetError';
-}
+/** One step of a chunk: a lone block, or a feedback loop stepped as one. */
+type Step =
+  | {
+      readonly loop: false;
+      readonly node: Node;
+      readonly running: Running;
+    }
+  | {
+      readonly loop: true;
+      readonly nodes: readonly Node[];
+      readonly running: readonly Running[];
+      readonly rate: number;
+      /** Members by index: delays first, then the rest in an order that works. */
+      readonly delays: readonly number[];
+      readonly order: readonly number[];
+      /** The longest span the loop can be stepped by: its shortest delay. */
+      readonly span: number;
+    };
 
 /**
  * Errors whose message is written for the user; anything else is reported as a
  * crash.
  */
-const EXPLAINED = new Set(['RateError', 'BudgetError', 'BlockError']);
+const EXPLAINED = new Set(['RateError', 'BlockError']);
 
-export class Simulator {
+const same = (a: readonly number[], b: readonly number[]) =>
+  a.length === b.length && a.every((v, i) => Math.abs(v - b[i]) <= 1e-9 * v);
+
+export class Stream {
   readonly #lookup: BlockLookup;
-  #cache = new Map<string, CacheEntry>();
+  #circuit: Circuit | undefined;
+  #steps: readonly Step[] = [];
+  /** The fastest rate anywhere, which sets how long a chunk can be. */
+  #fastest = 1;
+  #running = new Map<string, Running>();
+  /** Blocks that threw as they ran, with why; they stay out until reset. */
+  readonly #faults = new Map<string, string>();
+  readonly #buffers = new Map<string, Float32Array>();
+  #silence = new Float32Array(0);
+  #time = 0;
 
   constructor(lookup: BlockLookup) {
     this.#lookup = lookup;
   }
 
-  run(circuit: Circuit): SimulationResult {
+  /** Seconds simulated so far. */
+  get time(): number {
+    return this.#time;
+  }
+
+  /** Runs `circuit` from where the stream is. */
+  load(circuit: Circuit): LoadResult {
+    this.#faults.clear();
+    return this.#plan(circuit);
+  }
+
+  /** Pushes a block, as a button on the face does. */
+  press(id: string): void {
+    this.#running.get(id)?.processor.press?.();
+  }
+
+  /** Back to time 0, with every block built afresh. */
+  reset(): LoadResult | undefined {
+    this.#time = 0;
+    this.#running.clear();
+    this.#faults.clear();
+    return this.#circuit && this.#plan(this.#circuit);
+  }
+
+  /** Simulates up to `until` seconds, handing over each chunk as it is done. */
+  advance(until: number, onChunk?: (chunk: Chunk) => void): void {
+    const longest = Math.min(CHUNK_SECONDS, CHUNK_SAMPLES / this.#fastest);
+    while (until - this.#time > 1e-9) {
+      const from = this.#time;
+      const to = Math.min(until, from + longest);
+      const chunk = this.#step(from, to);
+      this.#time = to;
+      onChunk?.(chunk);
+    }
+  }
+
+  #plan(circuit: Circuit): LoadResult {
+    this.#circuit = circuit;
     const { nodes, unknown } = this.#nodes(circuit);
-    const signals = new Map<string, Signal>();
     const status = new Map<string, BlockStatus>();
-    const readings = new Map<string, readonly Reading[]>();
-    const signatures = new Map<string, number>();
-    const cache = new Map<string, CacheEntry>();
-    const budget: Budget = { remaining: SAMPLE_BUDGET };
-    let recomputed = 0;
+    const rates = new Map<string, number>();
+    const running = new Map<string, Running>();
+    const steps: Step[] = [];
+    let rebuilt = 0;
 
     for (const block of unknown) {
       status.set(block.id, {
@@ -112,41 +191,345 @@ export class Simulator {
       });
     }
 
-    for (const component of components(nodes)) {
-      const signature = fingerprint(component, circuit.duration, signatures);
-      const cached = component.map((node) => this.#cache.get(node.id));
-      let outcomes: readonly Outcome[];
-      if (cached.every((entry) => entry?.signature === signature)) {
-        outcomes = cached as CacheEntry[];
-
-        for (const outcome of outcomes) {
-          budget.remaining -= samplesIn(outcome);
-        }
-      } else {
-        outcomes = isLoop(component)
-          ? runLoop(component, circuit.duration, signals, budget)
-          : [runBlock(component[0], circuit.duration, signals, budget)];
-        recomputed += component.length;
+    // Carries a block on if it was built for the same rates, retuned if need be.
+    const start = (
+      node: Node,
+      inputRates: readonly number[],
+      outputRates: readonly number[],
+    ): Running => {
+      const old = this.#running.get(node.id);
+      const params = JSON.stringify(node.params);
+      if (
+        old &&
+        old.kind === node.type.kind &&
+        same(old.inputRates, inputRates) &&
+        same(old.outputRates, outputRates) &&
+        (old.params === params || old.processor.update?.(node.params))
+      ) {
+        old.params = params;
+        return old;
       }
 
-      component.forEach((node, k) => {
-        const outcome = outcomes[k];
-        signatures.set(node.id, signature);
-        cache.set(node.id, { ...outcome, signature });
-        status.set(node.id, outcome.status);
+      rebuilt++;
+      return {
+        kind: node.type.kind,
+        processor: node.type.create(node.params, {
+          inputRates,
+          outputRates,
+          time: this.#time,
+          seed: seedOf(node),
+        }),
+        inputRates,
+        outputRates,
+        params,
+        reported: '[]',
+      };
+    };
 
-        if (outcome.readings?.length) {
-          readings.set(node.id, outcome.readings);
+    const block = (node: Node): BlockStatus => {
+      const { type, params } = node;
+      const inputRates = node.sources.map((source) =>
+        source ? rates.get(portKey(source)) : undefined,
+      );
+      for (let i = 0; i < inputRates.length; i++) {
+        if (node.sources[i] && inputRates[i] === undefined) {
+          return idle(`No signal reaches input "${type.inputs[i].name}".`);
         }
+      }
 
-        outcome.outputs.forEach((signal, port) =>
-          signals.set(portKey({ block: node.id, port }), signal),
+      // Idle with nothing wired in, unless it can do without all its inputs.
+      const needed = type.inputs.filter((port) => !port.optional);
+      if (
+        needed.length > 0 &&
+        type.inputs.every((port, i) => port.optional || !node.sources[i])
+      ) {
+        return idle('Not connected.');
+      }
+
+      try {
+        const outputRates = type.rates
+          ? type.rates(inputRates, params)
+          : defaultRates(type, inputRates);
+        // An unconnected input reads silence at the rate of the connected ones.
+        const fill =
+          inputRates.find((rate) => rate !== undefined) ?? outputRates[0] ?? 0;
+        const r = start(
+          node,
+          inputRates.map((rate) => rate ?? fill),
+          outputRates,
+        );
+        running.set(node.id, r);
+        steps.push({ loop: false, node, running: r });
+        outputRates.forEach((rate, port) =>
+          rates.set(portKey({ block: node.id, port }), rate),
+        );
+        return { state: 'ok', rates: outputRates };
+      } catch (error) {
+        return failed(error);
+      }
+    };
+
+    const loop = (component: readonly Node[]): BlockStatus => {
+      const members = new Map(component.map((node, k) => [node.id, k]));
+
+      // Signals entering the loop from outside set its one sample rate.
+      const entering: (number | undefined)[] = [];
+      for (const node of component) {
+        for (const source of node.sources) {
+          if (source && !members.has(source.block)) {
+            const rate = rates.get(portKey(source));
+            if (rate === undefined) {
+              return idle('No signal enters the loop.');
+            }
+
+            entering.push(rate);
+          }
+        }
+      }
+
+      let rate: number | undefined;
+      try {
+        rate = sharedRate(entering);
+      } catch (error) {
+        return failed(error);
+      }
+
+      if (rate === undefined) {
+        return failure(
+          'A feedback loop needs an input from outside it to set its sample rate.',
+        );
+      }
+
+      const loopRate = rate;
+      for (const node of component) {
+        try {
+          const inputRates = node.sources.map((source) =>
+            source ? loopRate : undefined,
+          );
+          const outputRates = node.type.rates
+            ? node.type.rates(inputRates, node.params)
+            : node.type.outputs.map(() => loopRate);
+          if (
+            outputRates.some((r) => Math.abs(r - loopRate) > 1e-9 * loopRate)
+          ) {
+            return failure(
+              `${node.label} changes the sample rate, which a feedback loop can't do. Move it outside the loop.`,
+            );
+          }
+        } catch (error) {
+          return failed(error);
+        }
+      }
+
+      let built: Running[];
+      try {
+        built = component.map((node) =>
+          start(
+            node,
+            node.sources.map(() => loopRate),
+            node.type.outputs.map(() => loopRate),
+          ),
+        );
+      } catch (error) {
+        return failed(error);
+      }
+
+      const isDelay = built.map((r) => isDelayProcessor(r.processor));
+      const delays = isDelay.flatMap((delay, k) => (delay ? [k] : []));
+      if (delays.length === 0) {
+        return failure(
+          'This feedback loop has no Delay block. Every loop needs one.',
+        );
+      }
+
+      const order = orderWithinLoop(component, isDelay, members);
+      if (!order) {
+        return failure(
+          'One of the loops here has no Delay block. Every loop needs one.',
+        );
+      }
+
+      const span = Math.max(
+        1,
+        Math.min(
+          ...delays.map((k) => {
+            const processor = built[k].processor;
+            return isDelayProcessor(processor) ? processor.latency : 1;
+          }),
+        ),
+      );
+      component.forEach((node, k) => {
+        running.set(node.id, built[k]);
+        node.type.outputs.forEach((_, port) =>
+          rates.set(portKey({ block: node.id, port }), loopRate),
         );
       });
+      steps.push({
+        loop: true,
+        nodes: component,
+        running: built,
+        rate: loopRate,
+        delays,
+        order,
+        span,
+      });
+      return { state: 'ok', rates: [loopRate] };
+    };
+
+    for (const component of components(nodes)) {
+      const fault = component
+        .map((node) => this.#faults.get(node.id))
+        .find(Boolean);
+      const outcome = fault
+        ? failure(fault)
+        : isLoop(component)
+          ? loop(component)
+          : block(component[0]);
+
+      for (const node of component) {
+        status.set(
+          node.id,
+          outcome.state === 'ok'
+            ? {
+                state: 'ok',
+                rates: node.type.outputs.map((_, port) =>
+                  rates.get(portKey({ block: node.id, port }))!,
+                ),
+              }
+            : outcome,
+        );
+      }
     }
 
-    this.#cache = cache;
-    return { signals, status, readings, recomputed };
+    this.#running = running;
+    this.#steps = steps;
+    this.#fastest = Math.max(
+      1,
+      ...[...running.values()].flatMap((r) => [
+        ...r.inputRates,
+        ...r.outputRates,
+      ]),
+    );
+    return { status, rebuilt };
+  }
+
+  #step(from: number, to: number): Chunk {
+    const signals = new Map<string, ChunkSignal>();
+    const count = (rate: number) =>
+      sampleCount(to, rate) - sampleCount(from, rate);
+    const output = (block: string, port: number, rate: number) => {
+      const key = portKey({ block, port });
+      const n = count(rate);
+      let buffer = this.#buffers.get(key);
+      if (!buffer || buffer.length < n) {
+        buffer = new Float32Array(Math.max(n, 1024));
+        this.#buffers.set(key, buffer);
+      }
+
+      const data = buffer.subarray(0, n);
+      signals.set(key, { rate, start: sampleCount(from, rate), data });
+      return data;
+    };
+
+    // Never written to: processors only read their inputs.
+    const silence = (rate: number) => {
+      const n = count(rate);
+      if (this.#silence.length < n) {
+        this.#silence = new Float32Array(n);
+      }
+
+      return this.#silence.subarray(0, n);
+    };
+
+    const input = (source: PortRef | undefined, rate: number) =>
+      (source && signals.get(portKey(source))?.data) ?? silence(rate);
+
+    let faulted = false;
+    for (const step of this.#steps) {
+      try {
+        if (!step.loop) {
+          const { node, running } = step;
+          const outputs = running.outputRates.map((rate, port) =>
+            output(node.id, port, rate),
+          );
+          const inputs = node.sources.map((source, i) =>
+            input(source, running.inputRates[i]),
+          );
+          const end = outputs[0]?.length ?? count(running.inputRates[0] ?? 0);
+          running.processor.process(inputs, outputs, 0, end);
+
+          if (isDelayProcessor(running.processor)) {
+            running.processor.keep(inputs, end);
+          }
+
+          continue;
+        }
+
+        const { nodes, running, rate } = step;
+        const outputs = nodes.map((node) =>
+          node.type.outputs.map((_, port) => output(node.id, port, rate)),
+        );
+        const members = new Map(nodes.map((node, k) => [node.id, k]));
+        const inputs = nodes.map((node) =>
+          node.sources.map((source) => {
+            const member = source ? members.get(source.block) : undefined;
+            return source && member !== undefined
+              ? outputs[member][source.port]
+              : input(source, rate);
+          }),
+        );
+        const n = count(rate);
+        const order = [...step.delays, ...step.order];
+        // Delays first: their output for this span only needs input from earlier spans.
+        for (let start = 0; start < n; start += step.span) {
+          const end = Math.min(n, start + step.span);
+          for (const k of order) {
+            running[k].processor.process(inputs[k], outputs[k], start, end);
+          }
+        }
+
+        for (const k of step.delays) {
+          const processor = running[k].processor;
+          if (isDelayProcessor(processor)) {
+            processor.keep(inputs[k], n);
+          }
+        }
+      } catch (error) {
+        const message = failed(error);
+        for (const node of step.loop ? step.nodes : [step.node]) {
+          this.#faults.set(
+            node.id,
+            message.state === 'error' ? message.message : 'Failed.',
+          );
+        }
+
+        faulted = true;
+      }
+    }
+
+    const readings = new Map<string, readonly Reading[]>();
+    for (const [id, running] of this.#running) {
+      const now = running.processor.readings?.();
+      if (!now) {
+        continue;
+      }
+
+      const json = JSON.stringify(now);
+      if (json !== running.reported) {
+        running.reported = json;
+        readings.set(id, now);
+      }
+    }
+
+    return {
+      from,
+      to,
+      signals,
+      readings,
+      ...(faulted && this.#circuit
+        ? { status: this.#plan(this.#circuit).status }
+        : {}),
+    };
   }
 
   #nodes(circuit: Circuit): { nodes: Node[]; unknown: BlockNode[] } {
@@ -195,19 +578,75 @@ export class Simulator {
         continue;
       }
 
-      const params = resolveParams(type.params, block.params);
       nodes.push({
         id: block.id,
         label: block.name || type.label,
         type,
-        params,
+        params: resolveParams(type.params, block.params),
         sources: sources.get(block.id) ?? [],
-        local: `${block.id}|${block.kind}|${JSON.stringify(params)}`,
       });
     }
 
     return { nodes, unknown };
   }
+}
+
+export type SimulationResult = {
+  /** Every working output over the whole run, by port key. */
+  readonly signals: ReadonlyMap<string, Signal>;
+  readonly status: ReadonlyMap<string, BlockStatus>;
+  /** What each block that measures anything read at the end. */
+  readonly readings: ReadonlyMap<string, readonly Reading[]>;
+};
+
+/**
+ * Streams a circuit for its first `seconds` and keeps every signal, for when
+ * the whole run is wanted at once.
+ */
+export function simulate(
+  lookup: BlockLookup,
+  circuit: Circuit,
+  seconds: number,
+): SimulationResult {
+  const stream = new Stream(lookup);
+  let { status } = stream.load(circuit);
+  const pieces = new Map<
+    string,
+    { readonly rate: number; readonly parts: Float32Array[] }
+  >();
+  const readings = new Map<string, readonly Reading[]>();
+  stream.advance(seconds, (chunk) => {
+    for (const [key, signal] of chunk.signals) {
+      let entry = pieces.get(key);
+      if (!entry) {
+        pieces.set(key, (entry = { rate: signal.rate, parts: [] }));
+      }
+
+      entry.parts.push(signal.data.slice());
+    }
+
+    for (const [id, now] of chunk.readings) {
+      readings.set(id, now);
+    }
+
+    status = chunk.status ?? status;
+  });
+
+  const signals = new Map<string, Signal>();
+  for (const [key, { rate, parts }] of pieces) {
+    const data = new Float32Array(
+      parts.reduce((sum, part) => sum + part.length, 0),
+    );
+    let at = 0;
+    for (const part of parts) {
+      data.set(part, at);
+      at += part.length;
+    }
+
+    signals.set(key, { rate, data });
+  }
+
+  return { signals, status, readings };
 }
 
 /**
@@ -283,254 +722,28 @@ function isLoop(component: readonly Node[]): boolean {
   );
 }
 
-/** Hash of a component's settings and of everything feeding it from outside. */
-function fingerprint(
-  component: readonly Node[],
-  duration: number,
-  upstream: ReadonlyMap<string, number>,
-): number {
-  const members = new Set(component.map((node) => node.id));
-  const parts = [String(duration)];
-  for (const node of component) {
-    parts.push(node.local);
-
-    for (const source of node.sources) {
-      if (!source) {
-        parts.push('-');
-      } else if (members.has(source.block)) {
-        parts.push(`@${portKey(source)}`);
-      } else {
-        parts.push(`${upstream.get(source.block) ?? '?'}:${source.port}`);
-      }
-    }
-  }
-
-  return hash(parts.join('\n'));
-}
-
-function runBlock(
-  node: Node,
-  duration: number,
-  signals: ReadonlyMap<string, Signal>,
-  budget: Budget,
-): Outcome {
-  const { type, params } = node;
-  const inputs = node.sources.map((source) =>
-    source ? signals.get(portKey(source)) : undefined,
-  );
-  for (let i = 0; i < inputs.length; i++) {
-    if (node.sources[i] && !inputs[i]) {
-      return idle(`No signal reaches input "${type.inputs[i].name}".`);
-    }
-  }
-
-  if (type.inputs.length > 0 && inputs.every((input) => !input)) {
-    return idle('Not connected.');
-  }
-
-  try {
-    const inputRates = inputs.map((input) => input?.rate);
-    const outputRates = type.rates
-      ? type.rates(inputRates, params)
-      : defaultRates(type, inputRates);
-    // An unconnected input reads silence at the rate of the connected ones.
-    const fill =
-      inputRates.find((rate) => rate !== undefined) ?? outputRates[0] ?? 0;
-    const rates = inputRates.map((rate) => rate ?? fill);
-    const outputs = allocate(outputRates, duration, budget);
-    const processor = type.create(params, {
-      inputRates: rates,
-      outputRates,
-      duration,
-      seed: seedOf(node),
-    });
-    const end = outputs[0]?.length ?? sampleCount(duration, fill);
-    processor.process(
-      inputs.map(
-        (input, i) =>
-          input?.data ?? new Float32Array(sampleCount(duration, rates[i])),
-      ),
-      outputs,
-      0,
-      end,
-    );
-    return {
-      status: { state: 'ok', rates: outputRates },
-      readings: processor.readings?.() ?? [],
-      outputs: outputs.map((data, i) => ({ rate: outputRates[i], data })),
-    };
-  } catch (error) {
-    return failed(error);
-  }
-}
-
-function runLoop(
-  component: readonly Node[],
-  duration: number,
-  signals: ReadonlyMap<string, Signal>,
-  budget: Budget,
-): Outcome[] {
-  const fail = (outcome: Outcome): Outcome[] => component.map(() => outcome);
-  const members = new Map(component.map((node, k) => [node.id, k]));
-
-  // Signals entering the loop from outside set its one sample rate.
-  const entering = component.map((node) =>
-    node.sources.map((source) =>
-      source && !members.has(source.block)
-        ? signals.get(portKey(source))
-        : undefined,
-    ),
-  );
-  for (const [k, node] of component.entries()) {
-    for (const [i, source] of node.sources.entries()) {
-      if (source && !members.has(source.block) && !entering[k][i]) {
-        return fail(idle('No signal enters the loop.'));
-      }
-    }
-  }
-
-  let rate: number | undefined;
-  try {
-    rate = sharedRate(entering.flat().map((signal) => signal?.rate));
-  } catch (error) {
-    return fail(failed(error));
-  }
-
-  if (rate === undefined) {
-    return fail(
-      failure(
-        'A feedback loop needs an input from outside it to set its sample rate.',
-      ),
-    );
-  }
-
-  const loopRate = rate;
-
-  for (const node of component) {
-    try {
-      const inputRates = node.sources.map((source) =>
-        source ? loopRate : undefined,
-      );
-      const outputRates = node.type.rates
-        ? node.type.rates(inputRates, node.params)
-        : node.type.outputs.map(() => loopRate);
-      if (outputRates.some((r) => Math.abs(r - loopRate) > 1e-9 * loopRate)) {
-        return fail(
-          failure(
-            `${node.label} changes the sample rate, which a feedback loop can't do. Move it outside the loop.`,
-          ),
-        );
-      }
-    } catch (error) {
-      return fail(failed(error));
-    }
-  }
-
-  const n = sampleCount(duration, loopRate);
-  let outputs: Float32Array[][];
-  let processors: Processor[];
-  try {
-    outputs = component.map((node) =>
-      allocate(
-        node.type.outputs.map(() => loopRate),
-        duration,
-        budget,
-      ),
-    );
-    processors = component.map((node) =>
-      node.type.create(node.params, {
-        inputRates: node.sources.map(() => loopRate),
-        outputRates: node.type.outputs.map(() => loopRate),
-        duration,
-        seed: seedOf(node),
-      }),
-    );
-  } catch (error) {
-    return fail(failed(error));
-  }
-
-  const silence = new Float32Array(n);
-  const inputs = component.map((node, k) =>
-    node.sources.map((source, i) => {
-      if (!source) {
-        return silence;
-      }
-
-      const member = members.get(source.block);
-      // Checked above: every wired input from outside the loop has a signal.
-      return member === undefined
-        ? entering[k][i]!.data
-        : outputs[member][source.port];
-    }),
-  );
-
-  const delays = processors.flatMap((processor, k) =>
-    isDelayProcessor(processor) ? [k] : [],
-  );
-  if (delays.length === 0) {
-    return fail(
-      failure('This feedback loop has no Delay block. Every loop needs one.'),
-    );
-  }
-
-  const order = orderWithinLoop(component, processors, members);
-  if (!order) {
-    return fail(
-      failure(
-        'One of the loops here has no Delay block. Every loop needs one.',
-      ),
-    );
-  }
-
-  const chunk = Math.max(
-    1,
-    Math.min(...delays.map((k) => (processors[k] as DelayProcessor).latency)),
-  );
-
-  try {
-    // Delays first: their output for this chunk only needs input from earlier chunks.
-    const steps = [...delays, ...order].map(
-      (k) => [processors[k], inputs[k], outputs[k]] as const,
-    );
-    for (let start = 0; start < n; start += chunk) {
-      const end = Math.min(n, start + chunk);
-      for (const [processor, input, out] of steps) {
-        processor.process(input, out, start, end);
-      }
-    }
-  } catch (error) {
-    return fail(failed(error));
-  }
-
-  return component.map((node, k) => ({
-    status: { state: 'ok', rates: node.type.outputs.map(() => loopRate) },
-    outputs: outputs[k].map((data) => ({ rate: loopRate, data })),
-    readings: processors[k].readings?.() ?? [],
-  }));
-}
-
 /**
  * Order for the loop's non-delay blocks so each runs after the members feeding
- * it. Delay outputs are ready at the start of every chunk, so edges out of
+ * it. Delay outputs are ready at the start of every span, so edges out of
  * delays impose no order. Returns undefined when a cycle remains, meaning some
  * loop has no delay in it.
  */
 function orderWithinLoop(
   component: readonly Node[],
-  processors: readonly Processor[],
+  isDelay: readonly boolean[],
   members: ReadonlyMap<string, number>,
 ): number[] | undefined {
   const pending = new Map<number, number>();
   const feeds = new Map<number, number[]>();
   component.forEach((node, k) => {
-    if (isDelayProcessor(processors[k])) {
+    if (isDelay[k]) {
       return;
     }
 
     let count = 0;
     for (const source of node.sources) {
       const from = source ? members.get(source.block) : undefined;
-      if (from === undefined || isDelayProcessor(processors[from])) {
+      if (from === undefined || isDelay[from]) {
         continue;
       }
 
@@ -574,40 +787,19 @@ function defaultRates(
   return type.outputs.map(() => rate);
 }
 
-function allocate(
-  rates: readonly number[],
-  duration: number,
-  budget: Budget,
-): Float32Array[] {
-  const counts = rates.map((rate) => sampleCount(duration, rate));
-  const total = counts.reduce((sum, count) => sum + count, 0);
-  if (total > budget.remaining) {
-    throw new BudgetError(
-      'Too many samples to hold in memory. Shorten the duration or lower the sample rates.',
-    );
-  }
-
-  budget.remaining -= total;
-  return counts.map((count) => new Float32Array(count));
-}
-
-function samplesIn(outcome: Outcome): number {
-  return outcome.outputs.reduce((sum, signal) => sum + signal.data.length, 0);
-}
-
 function seedOf(node: Node): number {
   return hash(node.id) % 4294967296;
 }
 
-function idle(reason: string): Outcome {
-  return { status: { state: 'idle', reason }, outputs: [] };
+function idle(reason: string): BlockStatus {
+  return { state: 'idle', reason };
 }
 
-function failure(message: string): Outcome {
-  return { status: { state: 'error', message }, outputs: [] };
+function failure(message: string): BlockStatus {
+  return { state: 'error', message };
 }
 
-function failed(error: unknown): Outcome {
+function failed(error: unknown): BlockStatus {
   const message = errorMessage(error);
   return failure(
     EXPLAINED.has(errorName(error) ?? '')

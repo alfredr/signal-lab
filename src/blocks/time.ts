@@ -1,5 +1,5 @@
 import { Fir, hilbertTaps, SampleDelay } from '../dsp/fir.ts';
-import { downsample, upsample } from '../dsp/resample.ts';
+import { Downsampler, Upsampler } from '../dsp/resample.ts';
 import {
   defineBlock,
   RateError,
@@ -7,6 +7,7 @@ import {
 } from '../engine/block.ts';
 import { si } from '../engine/format.ts';
 import { choice, number } from '../engine/params.ts';
+import { sampleCount } from '../engine/signal.ts';
 
 export const delay = defineBlock({
   kind: 'delay',
@@ -27,13 +28,24 @@ export const delay = defineBlock({
     }),
   },
   summary: (p) => si(p.time, 's'),
+  lag: (p, rate) => Math.max(1, Math.round(p.time * rate)) / rate,
   create(p, context): DelayProcessor {
     const latency = Math.max(1, Math.round(p.time * context.outputRates[0]));
+    // The last `latency` inputs before this chunk, oldest first.
+    const held = new Float32Array(latency);
     return {
       latency,
       process([x], [y], start, end) {
         for (let i = start; i < end; i++) {
-          y[i] = i >= latency ? x[i - latency] : 0;
+          y[i] = i >= latency ? x[i - latency] : held[i];
+        }
+      },
+      keep([x], length) {
+        if (length >= latency) {
+          held.set(x.subarray(length - latency, length));
+        } else {
+          held.copyWithin(0, length);
+          held.set(x.subarray(0, length), latency - length);
         }
       },
     };
@@ -109,15 +121,17 @@ export const resample = defineBlock({
 
     return [p.direction === 'up' ? rate * p.factor : rate / p.factor];
   },
-  create(p) {
-    // Never in a loop, so this is a single call over the whole window.
+  create(p, { inputRates, outputRates, time }) {
+    // Never in a loop, so it always gets whole chunks.
+    const first = sampleCount(time, inputRates[0]);
+    const next = sampleCount(time, outputRates[0]);
+    const resampler =
+      p.direction === 'up'
+        ? new Upsampler(p.factor, first, next)
+        : new Downsampler(p.factor, first, next);
     return {
       process([x], [y]) {
-        if (p.direction === 'up') {
-          upsample(x, p.factor, y);
-        } else {
-          downsample(x, p.factor, y);
-        }
+        resampler.process(x, y);
       },
     };
   },

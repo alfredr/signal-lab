@@ -4,10 +4,12 @@
 // 240 x 144, controls 176 x 72, readouts 176 x 64, speakers 64 x 64 and notes 240 x 96.
 
 import {
+  BUTTON,
   CONTROL,
   NOTE,
   PLOT,
   READOUT,
+  SYMBOLS,
   SPEAKER,
   type PlotView,
 } from '../blocks/instruments.ts';
@@ -77,17 +79,19 @@ export const code = (name: string): string => `\`${name}\``;
 
 type PlotOptions = {
   readonly name?: string;
-  /** Follow the playhead, showing this many seconds around it. */
-  readonly follow?: number;
+  /** Seconds of the latest signal it shows, if not what suits the view. */
+  readonly span?: number;
   readonly low?: number;
   readonly high?: number;
+  /** A Bits to tones view, by full id, to join as a row. */
+  readonly stack?: string;
 };
 
 export const plot = (
   x: number,
   y: number,
   view: PlotView,
-  { name, follow, low, high }: PlotOptions = {},
+  { name, span, low, high, stack }: PlotOptions = {},
 ): Part => ({
   kind: PLOT,
   x,
@@ -95,10 +99,25 @@ export const plot = (
   ...(name ? { name } : {}),
   params: {
     view,
-    ...(follow ? { follow: true, span: follow } : {}),
+    ...(span ? { span } : {}),
     ...(low ? { low } : {}),
     ...(high ? { high } : {}),
+    ...(stack ? { stack } : {}),
   },
+});
+
+/** A Bits to tones view of the FT8 symbol mapper `mapper`. */
+export const symbolView = (
+  x: number,
+  y: number,
+  mapper: string,
+  name?: string,
+): Part => ({
+  kind: SYMBOLS,
+  x,
+  y,
+  ...(name ? { name } : {}),
+  params: { block: mapper },
 });
 
 export const speaker = (x: number, y: number): Part => ({
@@ -113,12 +132,13 @@ export const control = (
   y: number,
   target: string,
   name?: string,
+  style?: 'slider' | 'lcd',
 ): Part => ({
   kind: CONTROL,
   x,
   y,
   ...(name ? { name } : {}),
-  params: { target },
+  params: { target, ...(style ? { style } : {}) },
 });
 
 export const readout = (
@@ -126,7 +146,21 @@ export const readout = (
   y: number,
   block: string,
   reading: string,
-): Part => ({ kind: READOUT, x, y, params: { block, reading } });
+  style?: 'lcd',
+): Part => ({
+  kind: READOUT,
+  x,
+  y,
+  params: { block, reading, ...(style ? { style } : {}) },
+});
+
+export const button = (x: number, y: number, name: string): Part => ({
+  kind: BUTTON,
+  x,
+  y,
+  name,
+  params: {},
+});
 
 export const note = (
   x: number,

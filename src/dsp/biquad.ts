@@ -117,12 +117,25 @@ export function butterworth(
  * double-precision state.
  */
 export class Biquads {
-  readonly #sections: readonly Section[];
+  #sections: readonly Section[];
   readonly #state: Float64Array;
 
   constructor(sections: readonly Section[]) {
     this.#sections = sections;
     this.#state = new Float64Array(2 * sections.length);
+  }
+
+  /**
+   * Takes new coefficients and keeps the state, as when a knob turns; false if
+   * the number of sections differs.
+   */
+  retune(sections: readonly Section[]): boolean {
+    if (sections.length !== this.#sections.length) {
+      return false;
+    }
+
+    this.#sections = sections;
+    return true;
   }
 
   /**

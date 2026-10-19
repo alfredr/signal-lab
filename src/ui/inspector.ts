@@ -2,16 +2,19 @@
 // rebuilds only when the selection changes; otherwise it updates the existing controls in
 // place, so a slider being dragged is never replaced under the pointer.
 
-import { CONTROL, READOUT } from '../blocks/instruments.ts';
+import { FT8_MESSAGE } from '../blocks/ft8.ts';
+import { CONTROL, PLOT, READOUT, SYMBOLS } from '../blocks/instruments.ts';
+import { RECORDING } from '../blocks/sources.ts';
+import { packMessage, type Place } from '../dsp/ft8/message.ts';
 import {
   visiblePorts,
   type BlockType,
   type Reading,
 } from '../engine/block.ts';
 import type { PortRef } from '../engine/circuit.ts';
+import { errorMessage, errorName } from '../engine/errors.ts';
 import { formatReading } from '../engine/format.ts';
 import {
-  number,
   resolveParams,
   type NumberParam,
   type ParamValue,
@@ -19,10 +22,12 @@ import {
 import type { BlockStatus } from '../engine/simulator.ts';
 import {
   addParameter,
+  blockAt,
   diagramAt,
   freeParameterName,
   removeParameter,
   renameParameterAt,
+  renameProblem,
   setBinding,
   updateParameter,
   type Parameter,
@@ -31,6 +36,7 @@ import {
   removeBlocks,
   removeWire,
   renameBlock,
+  resolveRef,
   setNotes,
   setParam,
   setSettings,
@@ -42,16 +48,34 @@ import {
 } from '../model/document.ts';
 import type { Bindings } from '../model/flatten.ts';
 import {
+  controlState,
   hasControl,
+  mappers,
   parameterSpec,
   plotFrom,
   readables,
   settables,
+  stackHosts,
 } from '../model/instruments.ts';
 import { displayName, typeOf } from '../model/subsystems.ts';
+import {
+  cachedClip,
+  decodeClip,
+  getClip,
+  LONGEST,
+  putClip,
+  recordMicrophone,
+  type Clip,
+  type Recorder,
+} from './clips.ts';
 import { paramControl, type ChangeMode, type Control } from './controls.ts';
 import { html } from './dom.ts';
-import { NOTHING, selectedBlocks, type Selection } from './editor.ts';
+import {
+  NOTHING,
+  selectBlocks,
+  selectedBlocks,
+  type Selection,
+} from './editor.ts';
 import { portLabel, rateLabel } from './labels.ts';
 import { renderMarkdown } from './markdown.ts';
 import {
@@ -68,7 +92,7 @@ export type InspectorModel = {
   readonly selection: Selection;
   /** Block statuses by full id. */
   readonly status: ReadonlyMap<string, BlockStatus>;
-  /** What measuring blocks found, by full id. */
+  /** What measuring blocks report at the playhead, by full id. */
   readonly readings: ReadonlyMap<string, readonly Reading[]>;
   /** Every binding, worked out. */
   readonly bindings: Bindings;
@@ -85,17 +109,9 @@ export type InspectorEvents = {
   /** Adds a control for `target` to the diagram at `path`. */
   addControl(path: Path, target: string): void;
   addReadout(path: Path, block: string, reading: string): void;
+  /** Pushes a block, by full id, as a Button does. */
+  press(id: string): void;
 };
-
-const DURATION = number({
-  label: 'Duration',
-  unit: 's',
-  default: 1,
-  min: 0.01,
-  max: 20,
-  scale: 'log',
-  help: 'Every signal covers this much time.',
-});
 
 /** Status text for a block, empty when it is running. */
 function statusText(status: BlockStatus | undefined): string {
@@ -114,6 +130,9 @@ export class Inspector {
   #builtFor = '';
   /** Brings the built panel up to date with a new model. */
   #sync: (model: InspectorModel) => void = () => {};
+  /** Shows new readings, as the playhead moves. */
+  #showReadings: (readings: ReadonlyMap<string, readonly Reading[]>) => void =
+    () => {};
 
   constructor(host: HTMLElement, events: InspectorEvents) {
     this.#host = host;
@@ -141,6 +160,7 @@ export class Inspector {
           : `diagram:${path.join('/')}`;
     if (key !== this.#builtFor) {
       this.#builtFor = key;
+      this.#showReadings = () => {};
       const type = block && typeOf(block);
       let panel: HTMLElement;
       if (block && type && isSubsystem(block)) {
@@ -161,6 +181,11 @@ export class Inspector {
     }
 
     this.#sync(model);
+  }
+
+  /** Shows the readings at the playhead, as it moves. */
+  setReadings(readings: ReadonlyMap<string, readonly Reading[]>): void {
+    this.#showReadings(readings);
   }
 
   get #now(): InspectorModel {
@@ -257,6 +282,131 @@ export class Inspector {
    * Controls for one block's parameters, editing it wherever it sits in the
    * document.
    */
+  /**
+   * A Recording's sound: its name and length, a file to load, the microphone
+   * to record from, and Play to hear it from the start.
+   */
+  #clipPicker(fullId: string, choose: (id: string) => void): Control {
+    const about = html('span', { class: 'clip-name' });
+    const status = html('span', { class: 'clip-status', role: 'status' });
+    const file = html('input', {
+      type: 'file',
+      accept: 'audio/*,.wav,.mp3,.m4a,.ogg,.webm,.flac',
+      hidden: '',
+    });
+    const load = html(
+      'button',
+      { type: 'button', class: 'small' },
+      'Load file…',
+    );
+    const record = html(
+      'button',
+      { type: 'button', class: 'small' },
+      'Record',
+    );
+    const play = html('button', { type: 'button', class: 'small' }, 'Play');
+    // The recording described, undefined until the first sync.
+    let shown: string | undefined;
+    let recorder: Recorder | undefined;
+    let ticking: ReturnType<typeof setInterval> | undefined;
+    const describe = (id: string) => {
+      shown = id;
+      const clip = id ? cachedClip(id) : undefined;
+      about.textContent = clip
+        ? `${clip.name}, ${(clip.data.length / clip.rate).toFixed(1)} s`
+        : id
+          ? 'A recording not loaded yet'
+          : 'No recording yet';
+
+      if (id && !clip) {
+        void getClip(id).then((found) => {
+          if (found && shown === id) {
+            describe(id);
+          }
+        });
+      }
+    };
+
+    const take = async (made: Promise<Clip>) => {
+      status.textContent = 'Decoding…';
+
+      try {
+        const clip = await made;
+        await putClip(clip);
+        status.textContent = '';
+        choose(clip.id);
+        describe(clip.id);
+      } catch (error) {
+        status.textContent =
+          errorName(error) === 'EncodingError'
+            ? "That file isn't audio this browser can read."
+            : errorMessage(error);
+      }
+    };
+
+    load.addEventListener('click', () => file.click());
+    file.addEventListener('change', () => {
+      const chosen = file.files?.[0];
+      file.value = '';
+
+      if (chosen) {
+        void take(
+          chosen.arrayBuffer().then((b) => decodeClip(b, chosen.name)),
+        );
+      }
+    });
+    record.addEventListener('click', async () => {
+      if (recorder) {
+        const stopping = recorder;
+        recorder = undefined;
+        clearInterval(ticking);
+        record.textContent = 'Record';
+        record.setAttribute('aria-pressed', 'false');
+        void take(stopping.stop());
+        return;
+      }
+
+      try {
+        recorder = await recordMicrophone();
+      } catch (error) {
+        status.textContent =
+          errorName(error) === 'NotAllowedError'
+            ? 'The microphone is blocked; allow it in the browser to record.'
+            : errorMessage(error);
+        return;
+      }
+
+      const began = performance.now();
+      record.textContent = 'Stop';
+      record.setAttribute('aria-pressed', 'true');
+      status.textContent = 'Recording… 0 s';
+      ticking = setInterval(() => {
+        const seconds = (performance.now() - began) / 1000;
+        status.textContent = `Recording… ${Math.floor(seconds)} s of ${LONGEST}`;
+
+        if (seconds >= LONGEST && recorder) {
+          record.click();
+        }
+      }, 250);
+    });
+    play.addEventListener('click', () => this.#events.press(fullId));
+    return {
+      element: html(
+        'div',
+        { class: 'control clip-picker' },
+        html('span', { class: 'control-label' }, 'Recording'),
+        about,
+        html('div', { class: 'clip-buttons' }, load, record, play, file),
+        status,
+      ),
+      update: (value) => {
+        if (String(value) !== shown) {
+          describe(String(value));
+        }
+      },
+    };
+  }
+
   #paramControls(
     path: Path,
     block: LabBlock,
@@ -279,7 +429,50 @@ export class Inspector {
           mode,
         );
 
+      // A recording is loaded or recorded, not typed in.
+      if (block.kind === RECORDING && param === 'clip') {
+        const picker = this.#clipPicker(fullId, (id) =>
+          setValue(id, 'commit'),
+        );
+        controls.set(param, picker);
+        element.append(picker.element);
+        continue;
+      }
+
       // Instruments choose what they act on from lists, not typed ids.
+      if (block.kind === SYMBOLS && param === 'block') {
+        const picker = this.#picker(
+          spec.label,
+          () =>
+            mappers(this.#now.doc, path).map(
+              (m) => [m.block, m.label] as const,
+            ),
+          () => String(current().params.block ?? ''),
+          (value) => setValue(value, 'commit'),
+          (ref) => this.#nameOf(path, ref),
+        );
+        controls.set(param, picker);
+        element.append(picker.element);
+        continue;
+      }
+
+      if (block.kind === PLOT && param === 'stack') {
+        const picker = this.#picker(
+          spec.label,
+          () => [
+            ['none', 'Not stacked: a screen of its own'] as const,
+            ...stackHosts(this.#now.doc).map(
+              (host) => [host.id, host.label] as const,
+            ),
+          ],
+          () => String(current().params.stack ?? '') || 'none',
+          (value) => setValue(value === 'none' ? '' : value, 'commit'),
+        );
+        controls.set(param, picker);
+        element.append(picker.element);
+        continue;
+      }
+
       if (block.kind === CONTROL && param === 'target') {
         const picker = this.#picker(
           spec.label,
@@ -289,6 +482,15 @@ export class Inspector {
             ),
           () => String(current().params.target ?? ''),
           (value) => setValue(value, 'commit'),
+          (target) => {
+            const { doc, bindings } = this.#now;
+            const block = current();
+            const state = controlState(doc, bindings, path, {
+              ...block,
+              params: { ...block.params, target },
+            });
+            return 'problem' in state ? undefined : state.label;
+          },
         );
         controls.set(param, picker);
         element.append(picker.element);
@@ -303,7 +505,7 @@ export class Inspector {
         const picker = this.#picker(
           'Shows',
           () =>
-            readables(this.#now.doc, path, this.#now.readings).map(
+            readables(this.#now.doc, path).map(
               (r) => [JSON.stringify([r.block, r.reading]), r.label] as const,
             ),
           () => {
@@ -325,6 +527,11 @@ export class Inspector {
               ),
               'commit',
             );
+          },
+          (value) => {
+            const [ref, reading] = JSON.parse(value) as [string, string];
+            const name = this.#nameOf(path, ref);
+            return name && `${name} › ${reading}`;
           },
         );
         controls.set(param, picker);
@@ -447,12 +654,9 @@ export class Inspector {
         }
       },
       edit: (name, next) => {
-        const diagram = diagramAt(this.#now.doc, path);
-        if (
-          next.name !== name &&
-          diagram?.parameters?.some((p) => p.name === next.name)
-        ) {
-          return `There is already a parameter called "${next.name}" here.`;
+        const problem = renameProblem(this.#now.doc, path, name, next.name);
+        if (problem) {
+          return problem;
         }
 
         const renamed =
@@ -469,15 +673,50 @@ export class Inspector {
       },
       remove: (name) => at((d) => removeParameter(d, name)),
       panel: (name) => this.#controlHook(path, name),
+      ...(path.length
+        ? {
+            outside: (name: string) => {
+              const id = path.join('/');
+              const expression = blockAt(this.#now.doc, id)?.bindings?.[name];
+              if (expression === undefined) {
+                return undefined;
+              }
+
+              const value = this.#now.bindings.values.get(id)?.[name];
+              return {
+                expression,
+                value,
+                error:
+                  value === undefined
+                    ? (this.#now.bindings.errors.get(id) ??
+                      'can not be worked out')
+                    : undefined,
+              };
+            },
+            showOutside: () => {
+              this.#events.open(path.slice(0, -1));
+              this.#events.select(selectBlocks([path[path.length - 1]!]));
+            },
+          }
+        : {}),
     });
   }
 
   /** A menu of what an instrument can act on, refilled as the document changes. */
+  /** The name of the block `ref` refers to from the diagram at `path`. */
+  #nameOf(path: Path, ref: string): string | undefined {
+    const id = resolveRef(path, ref);
+    const block = id === undefined ? undefined : blockAt(this.#now.doc, id);
+    return block && displayName(block);
+  }
+
   #picker(
     label: string,
     options: () => readonly (readonly [value: string, label: string])[],
     value: () => string,
     choose: (value: string) => void,
+    // What a value not on the list is, such as something outside this subsystem.
+    name: (value: string) => string | undefined = () => undefined,
   ): Control {
     const select = html('select', { 'aria-label': label });
     const fill = () => {
@@ -495,7 +734,13 @@ export class Inspector {
           'Choose…',
         ),
         ...(chosen && !known
-          ? [html('option', { value: chosen, selected: true }, 'Missing')]
+          ? [
+              html(
+                'option',
+                { value: chosen, selected: true },
+                name(chosen) ?? 'Missing',
+              ),
+            ]
           : []),
         ...list.map(([v, text]) =>
           html('option', { value: v, selected: v === chosen }, text),
@@ -542,7 +787,47 @@ export class Inspector {
     const params = this.#paramControls(path, block, type);
     const outputs = this.#outputRows(fullId, type);
     const status = html('p', { class: 'status-note', role: 'status' });
-    const readings = html('dl', { class: 'readings' });
+    // What the block reports, each with its value at the playhead, if it has one.
+    const values = new Map<string, HTMLElement>();
+    const readings = html(
+      'dl',
+      { class: 'readings' },
+      ...(type.reports ?? []).flatMap((label) => {
+        const add = html(
+          'button',
+          {
+            type: 'button',
+            class: 'small icon',
+            title: 'Add a readout of this to the diagram',
+            'aria-label': `Add a readout of ${label}`,
+          },
+          '+',
+        );
+        add.addEventListener('click', () =>
+          this.#events.addReadout(this.#now.path, block.id, label),
+        );
+        const value = html('dd', {}, '–');
+        values.set(label, value);
+        return [
+          html('dt', {}, label),
+          value,
+          html('dd', { class: 'reading-add' }, add),
+        ];
+      }),
+    );
+    const packing = block.kind === FT8_MESSAGE ? this.#packing() : undefined;
+    this.#showReadings = (now) => {
+      const reported = now.get(fullId) ?? [];
+      for (const [label, value] of values) {
+        const reading = reported.find((r) => r.label === label);
+        const text = reading ? formatReading(reading) : '–';
+        if (value.textContent !== text) {
+          value.textContent = text;
+        }
+      }
+
+      packing?.show(reported);
+    };
 
     this.#sync = (model) => {
       const current = model.diagram.blocks.find((b) => b.id === block.id);
@@ -552,29 +837,9 @@ export class Inspector {
 
       name.sync(current);
       params.sync(current);
+      packing?.sync(current);
       outputs.sync(model);
-      readings.replaceChildren(
-        ...(model.readings.get(fullId) ?? []).flatMap((r) => {
-          const add = html(
-            'button',
-            {
-              type: 'button',
-              class: 'small icon',
-              title: 'Add a readout of this to the diagram',
-              'aria-label': `Add a readout of ${r.label}`,
-            },
-            '+',
-          );
-          add.addEventListener('click', () =>
-            this.#events.addReadout(model.path, block.id, r.label),
-          );
-          return [
-            html('dt', {}, r.label),
-            html('dd', {}, formatReading(r)),
-            html('dd', { class: 'reading-add' }, add),
-          ];
-        }),
-      );
+      this.#showReadings(model.readings);
       const state = model.status.get(fullId);
       status.textContent = statusText(state);
       status.dataset.state = state?.state ?? 'idle';
@@ -589,6 +854,7 @@ export class Inspector {
       name.element,
       params.element,
       readings,
+      packing?.element,
       status,
       outputs.element,
       html(
@@ -597,6 +863,138 @@ export class Inspector {
         this.#deleteButton([block.id], 'Delete block'),
       ),
     );
+  }
+
+  /**
+   * How an FT8 message block's text packs into its 77 bits, field by field,
+   * with the bits lit as they go out.
+   */
+  #packing(): {
+    element: HTMLElement;
+    sync(block: LabBlock): void;
+    show(readings: readonly Reading[]): void;
+  } {
+    const fields = html('div', { class: 'pack-fields' });
+    const element = html(
+      'div',
+      { class: 'packing' },
+      html('span', { class: 'control-label' }, 'Packing'),
+      html(
+        'p',
+        { class: 'control-help' },
+        "Each field is one number, sent as a fixed count of bits, most significant first. A callsign or grid is written in a mixed base: each character's place in the alphabet for its position is a digit.",
+      ),
+      fields,
+    );
+    let shown: string | undefined;
+    let bits: HTMLElement[] = [];
+    let lit = -1;
+
+    const light = (next: number) => {
+      if (next === lit) {
+        return;
+      }
+
+      lit = next;
+      bits.forEach((bit, i) => {
+        bit.classList.toggle('sent', i < lit);
+        bit.classList.toggle('now', i === lit);
+      });
+    };
+
+    const placesTable = (places: readonly Place[]) =>
+      html(
+        'table',
+        { class: 'pack-places' },
+        ...(
+          [
+            ['', (p: Place) => (p.char === ' ' ? '␣' : p.char)],
+            ['place', (p: Place) => String(p.index)],
+            ['of', (p: Place) => String(p.of)],
+          ] as const
+        ).map(([label, cell]) =>
+          html(
+            'tr',
+            {},
+            html('th', {}, label),
+            ...places.map((p) => html('td', {}, cell(p))),
+          ),
+        ),
+      );
+
+    // ((a×36 + b)×10 + c)…: each place in units of the alphabets after it.
+    const formula = (places: readonly Place[]) =>
+      places.reduce(
+        (expression, p, i) =>
+          i === 0
+            ? String(p.index)
+            : `${i > 1 ? `(${expression})` : expression}×${p.of} + ${p.index}`,
+        '',
+      );
+
+    return {
+      element,
+      sync: (block) => {
+        const text = String(block.params.message ?? '');
+        if (text === shown) {
+          return;
+        }
+
+        shown = text;
+        const packed = packMessage(text);
+        if (!packed.ok) {
+          bits = [];
+          fields.replaceChildren(
+            html('p', { class: 'pack-error' }, packed.error),
+          );
+          return;
+        }
+
+        bits = [];
+        fields.replaceChildren(
+          ...packed.fields.map((field) => {
+            const own = field.bits.map((bit) => html('span', {}, String(bit)));
+            bits.push(...own);
+            const how = field.places
+              ? `${formula(field.places)}${field.offset ? ` + ${field.offset}` : ''}`
+              : field.how;
+            return html(
+              'div',
+              { class: 'pack-field' },
+              html(
+                'div',
+                { class: 'pack-head' },
+                html('span', { class: 'pack-name' }, field.name),
+                html('span', { class: 'pack-text' }, field.text || 'blank'),
+                html('span', { class: 'pack-value' }, String(field.value)),
+              ),
+              field.places ? placesTable(field.places) : null,
+              how ? html('p', { class: 'pack-how' }, how) : null,
+              html(
+                'p',
+                {
+                  class: 'pack-bits',
+                  title: `${field.bits.length} bit${field.bits.length > 1 ? 's' : ''}`,
+                },
+                ...own,
+              ),
+            );
+          }),
+        );
+        lit = -2;
+        light(-1);
+      },
+      show: (readings) => {
+        const bit = readings.find((r) => r.label === 'Bit');
+        const sent = readings.find((r) => r.label === 'Sent');
+        if (bit) {
+          light(Number.parseInt(String(bit.value), 10) - 1);
+        } else if (!readings.some((r) => r.label === 'Field')) {
+          // Not between two bits of the message: before it, or after.
+          light(sent && !String(sent.value).includes('·') ? bits.length : -1);
+        }
+      },
+    };
   }
 
   #subsystemPanel(
@@ -1020,7 +1418,7 @@ export class Inspector {
         'div',
         { class: 'description' },
         renderMarkdown(
-          "The Input and Output terminals here are the subsystem's ports. Its notes go wherever it is copied.",
+          "The Input and Output terminals here are the subsystem's ports. Beside each is what it is wired to outside, in this copy, and above a block are the controls and readouts outside that set or read it; click a name to go there. Its notes go wherever it is copied.",
         ),
       ),
       html(
@@ -1048,16 +1446,6 @@ export class Inspector {
         'commit',
       ),
     );
-    const duration = paramControl(
-      DURATION,
-      this.#now.doc.duration,
-      (value, mode) =>
-        this.#events.change(
-          setSettings(this.#now.doc, { duration: value as number }),
-          mode,
-        ),
-    );
-
     const notes = this.#notes([]);
     const parameters = this.#parameters([]);
 
@@ -1066,7 +1454,6 @@ export class Inspector {
         title.value = model.doc.title;
       }
 
-      duration.update(model.doc.duration);
       parameters.sync();
       notes.sync(model);
     };
@@ -1080,7 +1467,6 @@ export class Inspector {
         { class: 'control' },
         html('label', { class: 'control-label' }, 'Title', title),
       ),
-      duration.element,
       parameters.element,
       notes.element,
       html(
@@ -1103,7 +1489,12 @@ export class Inspector {
           html(
             'li',
             {},
-            'Click a wire or block to see its signal; pin it to keep it on the bench. Press Play to listen.',
+            'Press Run to start the stream; time runs on until you pause it, and Reset takes it back to 0. Turning a knob changes what happens from then on.',
+          ),
+          html(
+            'li',
+            {},
+            'Click a wire or block to see its signal on the panel, and Add plot to keep it there. Turn a speaker on to listen.',
           ),
           html(
             'li',
@@ -1113,7 +1504,7 @@ export class Inspector {
           html(
             'li',
             {},
-            'Scroll to pan; pinch or ctrl+scroll to zoom. Delete removes the selection, ⌘Z undoes, Esc steps out of a subsystem.',
+            'The mouse wheel or a pinch zooms; drag the background, or scroll with two fingers, to pan. Delete removes the selection, ⌘Z undoes, Esc steps out of a subsystem.',
           ),
           html(
             'li',

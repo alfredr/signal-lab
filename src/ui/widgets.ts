@@ -1,17 +1,19 @@
 // What each instrument looks like, on the diagram and on the panel face. Both
-// places show the same live state: the face's widgets are larger, and its
-// screens zoom and play. A widget is rebuilt only when what it is built from
-// changes, so a knob keeps working while it turns and changes the document
-// under it.
+// places show the same live state as of the playhead: the face's widgets are
+// larger, and its screens zoom and listen. A widget is rebuilt only when what
+// it is built from changes, so a knob keeps working while it turns and changes
+// the document under it.
 
 import {
+  BUTTON,
   CONTROL,
   NOTE,
   PLOT,
   READOUT,
   SPEAKER,
+  SYMBOLS,
 } from '../blocks/instruments.ts';
-import { readingAt, type Reading } from '../engine/block.ts';
+import type { Reading } from '../engine/block.ts';
 import { portKey, type PortRef } from '../engine/circuit.ts';
 import { formatReading } from '../engine/format.ts';
 import {
@@ -20,11 +22,11 @@ import {
   type ParamSpec,
   type ParamValue,
 } from '../engine/params.ts';
-import type { Signal } from '../engine/signal.ts';
 import type { BlockStatus } from '../engine/simulator.ts';
 import {
   diagramAt,
   pathId,
+  resolveRef,
   setParam,
   updateDiagramAt,
   wireInto,
@@ -33,8 +35,10 @@ import {
 import type { Bindings } from '../model/flatten.ts';
 import {
   controlState,
+  symbolSources,
   type ControlState,
   type FaceItem,
+  type SymbolSources,
 } from '../model/instruments.ts';
 import {
   formatParam,
@@ -47,6 +51,7 @@ import {
 } from './controls.ts';
 import { html, svg } from './dom.ts';
 import { blockLabel } from './labels.ts';
+import type { Live } from './live.ts';
 import { renderMarkdown } from './markdown.ts';
 import {
   plotSettings,
@@ -54,23 +59,28 @@ import {
   SignalPanel,
   type ScreenState,
 } from './signal-panel.ts';
+import { SymbolView } from './symbols.ts';
 
 export type WidgetContext = {
   readonly doc: LabDocument;
-  readonly signals: ReadonlyMap<string, Signal>;
+  /** The stream as the page has it. */
+  readonly live: Live;
+  /** Every block's readings at the playhead. */
   readonly readings: ReadonlyMap<string, readonly Reading[]>;
   readonly status: ReadonlyMap<string, BlockStatus>;
   readonly bindings: Bindings;
-  /** Key of the port being played, if any. */
-  readonly playing: string | undefined;
-  /** The playhead's time, if it is out. */
-  readonly time: number | undefined;
+  /** Keys of the ports being listened to. */
+  readonly listening: ReadonlySet<string>;
+  /** The playhead's time. */
+  readonly time: number;
 };
 
 export type WidgetEvents = {
   change(next: LabDocument, mode: ChangeMode): void;
-  play(at: PortRef): void;
-  stop(): void;
+  /** Starts or stops listening to a port. */
+  listen(at: PortRef): void;
+  /** Pushes a block, by full id, as a Button does. */
+  press(id: string): void;
 };
 
 export type Place = 'diagram' | 'face';
@@ -281,6 +291,91 @@ function knob(
   return { element, update: (v) => show(v as number) };
 }
 
+/**
+ * An LCD you type into, as on the front of a radio: a text setting, or a
+ * number that the wheel and the arrow keys also step.
+ */
+function lcd(
+  spec: ParamSpec,
+  value: ParamValue,
+  onChange: (value: ParamValue, mode: ChangeMode) => void,
+): Control {
+  const input = html('input', {
+    type: 'text',
+    class: 'lcd',
+    spellcheck: 'false',
+    autocomplete: 'off',
+    'aria-label': spec.label,
+  });
+  let shown = value;
+  const text = (v: ParamValue) =>
+    spec.type === 'number' ? formatParam(v as number, spec) : String(v);
+  const show = (v: ParamValue) => {
+    shown = v;
+
+    if (document.activeElement !== input) {
+      input.value = text(v);
+    }
+  };
+
+  show(value);
+  input.addEventListener('change', () => {
+    const parsed =
+      spec.type === 'number' ? parseQuantity(input.value) : input.value.trim();
+    if (parsed === undefined) {
+      input.value = text(shown);
+      return;
+    }
+
+    shown = coerceParam(spec, parsed);
+    onChange(shown, 'commit');
+  });
+  input.addEventListener('blur', () => (input.value = text(shown)));
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      input.blur();
+    }
+  });
+
+  if (spec.type === 'number') {
+    const step = (by: number, mode: ChangeMode) => {
+      const v = fromFraction(spec, toFraction(spec, shown as number) + by);
+      shown = coerceParam(spec, v);
+      input.value = text(shown);
+      onChange(shown, mode);
+    };
+
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    input.addEventListener(
+      'wheel',
+      (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        step(-event.deltaY / 1500, 'preview');
+        clearTimeout(settle);
+        settle = setTimeout(() => onChange(shown, 'commit'), 300);
+      },
+      { passive: false },
+    );
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowUp' || event.key === 'ArrowDown') {
+        event.preventDefault();
+        step(event.key === 'ArrowUp' ? 0.01 : -0.01, 'commit');
+      }
+    });
+  }
+
+  return {
+    element: html(
+      'label',
+      { class: 'lcd-control' },
+      html('span', { class: 'control-label' }, spec.label),
+      input,
+    ),
+    update: (v) => show(v),
+  };
+}
+
 /** What a control is built from, besides its block. */
 function controlShape(state: ControlState | { problem: string }): string {
   return 'problem' in state
@@ -343,12 +438,15 @@ export class Widgets {
   }
 
   /** Moves the playhead: readouts and plots catch up. */
-  setTime(time: number | undefined): void {
-    if (!this.#context || this.#context.time === time) {
+  setTime(
+    time: number,
+    readings: ReadonlyMap<string, readonly Reading[]>,
+  ): void {
+    if (!this.#context) {
       return;
     }
 
-    this.#context = { ...this.#context, time };
+    this.#context = { ...this.#context, time, readings };
 
     for (const id of this.#live) {
       this.#instances.get(id)?.sync(this.#context);
@@ -371,6 +469,10 @@ export class Widgets {
         return this.#control(place, item);
       case READOUT:
         return this.#readout(item);
+      case SYMBOLS:
+        return this.#symbols(item);
+      case BUTTON:
+        return this.#button(place, item);
       case NOTE:
         return {
           element: html(
@@ -388,23 +490,20 @@ export class Widgets {
   #screenState(context: WidgetContext, item: FaceItem): ScreenState {
     const at = inputOf(context.doc, item);
     return {
-      signal: at && context.signals.get(portKey(at)),
+      trace: at && context.live.traces.get(portKey(at)),
       settings: plotSettings(current(context, item).block.params),
       color: 'var(--accent)',
       time: context.time,
+      problem: at
+        ? problemAt(context.status, at)
+        : 'Wire something into this plot.',
     };
   }
 
   #toggle(context: WidgetContext, item: FaceItem): void {
     const at = inputOf(context.doc, item);
-    if (!at) {
-      return;
-    }
-
-    if (context.playing === portKey(at)) {
-      this.#events.stop();
-    } else {
-      this.#events.play(at);
+    if (at) {
+      this.#events.listen(at);
     }
   }
 
@@ -434,7 +533,7 @@ export class Widgets {
             ),
           'commit',
         ),
-      play: () => context && this.#toggle(context, item),
+      listen: () => context && this.#toggle(context, item),
     });
     return {
       element: panel.element,
@@ -446,7 +545,7 @@ export class Widgets {
           title:
             item.block.name ||
             (at ? blockLabel(latest.doc, at.block) : 'Plot'),
-          playing: at !== undefined && latest.playing === portKey(at),
+          listening: at !== undefined && latest.listening.has(portKey(at)),
         });
       },
     };
@@ -454,12 +553,12 @@ export class Widgets {
 
   #speaker(place: Place, item: FaceItem): Omit<Widget, 'key'> {
     let context: WidgetContext | undefined;
-    const play = html(
+    const power = html(
       'button',
       { type: 'button', class: 'small play', 'data-live': '' },
-      'Play',
+      'Off',
     );
-    play.addEventListener('click', (event) => {
+    power.addEventListener('click', (event) => {
       event.stopPropagation();
 
       if (context) {
@@ -476,18 +575,19 @@ export class Widgets {
       { class: `widget-speaker on-${place}` },
       ...(place === 'face' && item.block.name ? [label] : []),
       grille,
-      play,
+      power,
     );
     return {
       element,
       sync: (latest) => {
         context = latest;
         const at = inputOf(latest.doc, item);
-        const playing = at !== undefined && latest.playing === portKey(at);
-        element.classList.toggle('playing', playing);
-        play.textContent = playing ? 'Stop' : 'Play';
-        play.setAttribute('aria-pressed', String(playing));
-        play.disabled = !at;
+        const on = at !== undefined && latest.listening.has(portKey(at));
+        element.classList.toggle('playing', on);
+        power.textContent = on ? 'On' : 'Off';
+        power.title = on ? 'Turn this speaker off' : 'Turn this speaker on';
+        power.setAttribute('aria-pressed', String(on));
+        power.disabled = !at;
       },
     };
   }
@@ -554,10 +654,13 @@ export class Widgets {
         );
         return 'problem' in now ? doc : now.set(doc, value);
       }, mode);
+    const style = item.block.params.style;
     const control =
-      spec.type === 'number' && item.block.params.style !== 'slider'
-        ? knob(spec, state.value as number, set)
-        : paramControl(spec, state.value, set);
+      style === 'lcd' && (spec.type === 'number' || spec.type === 'text')
+        ? lcd(spec, state.value, set)
+        : spec.type === 'number' && style !== 'slider'
+          ? knob(spec, state.value as number, set)
+          : paramControl(spec, state.value, set);
     return {
       element: html(
         'div',
@@ -578,35 +681,151 @@ export class Widgets {
     };
   }
 
+  /** A push button: each press sends a pulse from the block. */
+  #button(place: Place, item: FaceItem): Omit<Widget, 'key'> {
+    const push = html(
+      'button',
+      { type: 'button', class: 'push', 'data-live': '' },
+      item.block.name || 'Push',
+    );
+    push.addEventListener('pointerdown', (event) => event.stopPropagation());
+    push.addEventListener('click', (event) => {
+      event.stopPropagation();
+      this.#events.press(item.id);
+      // A moment of light, as a lit push button gives.
+      push.classList.add('pressed');
+      setTimeout(() => push.classList.remove('pressed'), 150);
+    });
+    return {
+      element: html('div', { class: `widget-button on-${place}` }, push),
+      sync: () => {},
+    };
+  }
+
+  /** A Bits to tones view, here and on the face alike. */
+  #symbols(item: FaceItem): Omit<Widget, 'key'> {
+    const view = new SymbolView();
+    const title = html('span', { class: 'widget-title' });
+    // Worked out again only when the document or its statuses change.
+    let made:
+      | {
+          readonly doc: LabDocument;
+          readonly status: ReadonlyMap<string, BlockStatus>;
+          readonly sources: SymbolSources | { readonly problem: string };
+        }
+      | undefined;
+    return {
+      element: html(
+        'div',
+        { class: 'widget-plot widget-symbols' },
+        title,
+        view.element,
+      ),
+      sync: (context) => {
+        const now = current(context, item);
+        title.textContent = now.block.name || 'Bits to tones';
+
+        if (made?.doc !== context.doc || made.status !== context.status) {
+          made = {
+            doc: context.doc,
+            status: context.status,
+            sources: symbolSources(context.doc, now, context),
+          };
+        }
+
+        const { sources } = made;
+        const trace = (at: PortRef | undefined) =>
+          at && context.live.traces.get(portKey(at));
+        view.update(
+          'problem' in sources
+            ? {
+                time: context.time,
+                start: 0,
+                span: 0,
+                tone: undefined,
+                bits: undefined,
+                glide: undefined,
+                stacked: [],
+                problem: sources.problem,
+              }
+            : {
+                time: context.time,
+                start: sources.start,
+                span: Number(now.block.params.span ?? 2.4),
+                tone: trace(sources.tone),
+                bits: trace(sources.bits),
+                glide: sources.glide && {
+                  trace: trace(sources.glide.at),
+                  lag: sources.glide.lag,
+                },
+                stacked: sources.stacked.map((row) => ({
+                  name: row.item.block.name || 'Plot',
+                  trace: trace(row.at),
+                  lag: row.lag,
+                })),
+                problem: undefined,
+              },
+        );
+      },
+    };
+  }
+
   #readout(item: FaceItem): Omit<Widget, 'key'> {
     const label = html('span', { class: 'control-label' });
-    const value = html('span', { class: 'widget-value' });
-    const from = html('span', { class: 'widget-from' });
+    const value = html('span', {
+      class:
+        item.block.params.style === 'lcd'
+          ? 'widget-value lcd'
+          : 'widget-value',
+    });
+    // A line under the value, only when something is wrong; where the
+    // reading comes from is in the tooltip, so readouts and controls line up.
+    const problem = html('span', { class: 'widget-from' });
+    const element = html(
+      'div',
+      { class: 'widget-readout' },
+      label,
+      value,
+      problem,
+    );
     return {
-      element: html('div', { class: 'widget-readout' }, label, value, from),
+      element,
       sync: (context) => {
         const block = String(item.block.params.block ?? '');
         const wanted = String(item.block.params.reading ?? '');
-        const id = pathId(item.path, block);
+        const id = resolveRef(item.path, block) ?? '';
         const status = context.status.get(id);
         const reading = context.readings
           .get(id)
           ?.find((r) => r.label === wanted);
-        const now = reading && readingAt(reading, context.time);
         label.textContent = item.block.name || wanted || 'Readout';
-        value.textContent =
-          reading && now !== undefined
-            ? formatReading({ ...reading, value: now })
-            : '–';
-        value.title = value.textContent;
+        value.textContent = reading ? formatReading(reading) : '–';
         value.classList.toggle('error', status?.state === 'error');
-        from.textContent =
+        const trouble =
           status?.state === 'error'
             ? status.message
             : block
-              ? blockLabel(context.doc, id)
+              ? ''
               : 'Choose a reading in the inspector.';
+        problem.textContent = trouble;
+        problem.hidden = !trouble;
+        element.title = block
+          ? `${value.textContent}\n${wanted}, from ${blockLabel(context.doc, id)}`
+          : '';
       },
     };
   }
+}
+
+/** Why nothing comes out of a port, if nothing does. */
+export function problemAt(
+  status: ReadonlyMap<string, BlockStatus>,
+  at: PortRef,
+): string | undefined {
+  const source = status.get(at.block);
+  return source?.state === 'error'
+    ? `No signal here: ${source.message}`
+    : source?.state === 'idle'
+      ? `No signal here: ${source.reason}`
+      : undefined;
 }

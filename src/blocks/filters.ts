@@ -1,6 +1,7 @@
 import { bandpassSection, Biquads, butterworth } from '../dsp/biquad.ts';
+import { Fir } from '../dsp/fir.ts';
 import { defineBlock } from '../engine/block.ts';
-import { si } from '../engine/format.ts';
+import { si, significant } from '../engine/format.ts';
 import { choice, number } from '../engine/params.ts';
 
 const order = choice({
@@ -36,16 +37,17 @@ export const lowpass = defineBlock({
   },
   summary: (p) => `< ${si(p.cutoff, 'Hz')}`,
   create(p, context) {
-    const filter = new Biquads(
+    const design = (q: typeof p) =>
       butterworth(
         'lowpass',
-        Number(p.order),
-        p.cutoff,
+        Number(q.order),
+        q.cutoff,
         context.outputRates[0],
-      ),
-    );
+      );
+    const filter = new Biquads(design(p));
     return {
       process: ([x], [y], start, end) => filter.process(x, y, start, end),
+      update: (next) => filter.retune(design(next)),
     };
   },
 });
@@ -71,16 +73,17 @@ export const highpass = defineBlock({
   },
   summary: (p) => `> ${si(p.cutoff, 'Hz')}`,
   create(p, context) {
-    const filter = new Biquads(
+    const design = (q: typeof p) =>
       butterworth(
         'highpass',
-        Number(p.order),
-        p.cutoff,
+        Number(q.order),
+        q.cutoff,
         context.outputRates[0],
-      ),
-    );
+      );
+    const filter = new Biquads(design(p));
     return {
       process: ([x], [y], start, end) => filter.process(x, y, start, end),
+      update: (next) => filter.retune(design(next)),
     };
   },
 });
@@ -119,12 +122,73 @@ export const bandpass = defineBlock({
   },
   summary: (p) => `${si(p.center, 'Hz')} ±${si(p.bandwidth / 2, 'Hz')}`,
   create(p, context) {
-    // n identical resonators narrow the -3 dB width by sqrt(2^(1/n) - 1); widen each to match.
-    const each = p.bandwidth / Math.sqrt(2 ** (1 / p.sections) - 1);
-    const section = bandpassSection(p.center, each, context.outputRates[0]);
-    const filter = new Biquads(
-      Array.from({ length: p.sections }, () => section),
-    );
+    const design = (q: typeof p) => {
+      // n identical resonators narrow the -3 dB width by sqrt(2^(1/n) - 1); widen each to match.
+      const each = q.bandwidth / Math.sqrt(2 ** (1 / q.sections) - 1);
+      const section = bandpassSection(q.center, each, context.outputRates[0]);
+      return Array.from({ length: q.sections }, () => section);
+    };
+
+    const filter = new Biquads(design(p));
+    return {
+      process: ([x], [y], start, end) => filter.process(x, y, start, end),
+      update: (next) => filter.retune(design(next)),
+    };
+  },
+});
+
+/**
+ * How many samples a Gaussian filter reaches each way: out to four standard
+ * deviations, which leaves less than 1e-4 behind. It is also its delay.
+ */
+function gaussianHalf(time: number, bt: number, rate: number): number {
+  const sigma = (Math.sqrt(Math.LN2) / (2 * Math.PI * bt)) * time * rate;
+  return Math.max(1, Math.round(4 * sigma));
+}
+
+export const gaussian = defineBlock({
+  kind: 'gaussian',
+  label: 'Gaussian filter',
+  category: 'Filters',
+  description: String.raw`Smooths its input with a Gaussian bell, so a step becomes a glide with no overshoot. In GFSK, which FT8 uses, it rounds each step of the frequency, so the signal throws less energy onto its neighbours. Its width is set against a symbol time $T$ by the bandwidth-time product $BT$: the bell's standard deviation is $\sigma = \frac{\sqrt{\ln 2}}{2\pi \cdot BT}\, T$, so FT8's $BT = 2$ smooths each step over about a quarter of a symbol. It reaches four standard deviations each way, so it delays the signal by $4\sigma$: 42.4 ms for FT8.`,
+  inputs: [{ name: 'in' }],
+  outputs: [{ name: 'out' }],
+  params: {
+    time: number({
+      label: 'Symbol time',
+      unit: 's',
+      default: 0.16,
+      min: 1e-5,
+      max: 10,
+      scale: 'log',
+    }),
+    bt: number({
+      label: 'BT',
+      default: 2,
+      min: 0.1,
+      max: 10,
+      step: 0.1,
+      help: 'Bandwidth times symbol time: smaller is smoother.',
+    }),
+  },
+  summary: (p) => `BT ${significant(p.bt)}`,
+  lag: (p, rate) => gaussianHalf(p.time, p.bt, rate) / rate,
+  create(p, context) {
+    const rate = context.outputRates[0];
+    const sigma = (Math.sqrt(Math.LN2) / (2 * Math.PI * p.bt)) * p.time * rate;
+    const half = gaussianHalf(p.time, p.bt, rate);
+    const taps = new Float64Array(2 * half + 1);
+    let sum = 0;
+    for (let k = 0; k < taps.length; k++) {
+      taps[k] = Math.exp(-((k - half) ** 2) / (2 * sigma * sigma));
+      sum += taps[k];
+    }
+
+    for (let k = 0; k < taps.length; k++) {
+      taps[k] /= sum;
+    }
+
+    const filter = new Fir(taps);
     return {
       process: ([x], [y], start, end) => filter.process(x, y, start, end),
     };

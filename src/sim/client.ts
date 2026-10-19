@@ -1,126 +1,141 @@
-// The page's side of the simulation worker. One run at a time: while one is
-// under way only the newest request waits, so dragging a slider never builds
-// a backlog, and the page stays responsive however long a run takes.
+// The page's side of the simulation worker. Documents and watched ports go over
+// as they change; advances go one at a time, so the stream never runs further
+// ahead than the page asked for, and a load or reset never waits behind a
+// queue of them.
 
-import type { Reading } from '../engine/block.ts';
-import type { Signal } from '../engine/signal.ts';
 import type { BlockStatus } from '../engine/simulator.ts';
 import type { LabDocument } from '../model/document.ts';
-import type { SimulationRequest, SimulationResponse } from './protocol.ts';
+import type { FromWorker, Samples, ToWorker } from './protocol.ts';
 
-export type Simulation = {
-  /** The document this is the result for. */
-  readonly doc: LabDocument;
-  readonly statuses: ReadonlyMap<string, BlockStatus>;
-  readonly readings: ReadonlyMap<string, readonly Reading[]>;
-  /** The signals asked for, by port key. */
-  readonly signals: ReadonlyMap<string, Signal>;
-  readonly recomputed: number;
-  readonly errors: number;
-  readonly elapsed: number;
+export type Chunk = Extract<FromWorker, { type: 'chunk' }>;
+
+export type StreamEvents = {
+  status(statuses: ReadonlyMap<string, BlockStatus>): void;
+  /** The stream reached `chunk.time`, with what the watched ports carried. */
+  chunk(chunk: Chunk): void;
+  /** History for ports just watched. */
+  history(samples: readonly Samples[]): void;
+  error(message: string): void;
 };
 
-type Held = { readonly version: number; readonly signal: Signal };
-
-export class SimulationClient {
+export class StreamClient {
   readonly #worker: Worker;
-  readonly #onResult: (simulation: Simulation) => void;
-  readonly #onError: (message: string) => void;
-  #held = new Map<string, Held>();
-  #running: { readonly id: number; readonly doc: LabDocument } | undefined;
-  #waiting:
-    | { readonly doc: LabDocument; readonly wanted: readonly string[] }
-    | undefined;
-  #nextId = 1;
+  readonly #events: StreamEvents;
+  #epoch = 0;
+  /** Advances sent and not yet answered. */
+  #pending = 0;
+  #doc: LabDocument | undefined;
+  #watched = '';
+  /** Recordings already handed to the worker. */
+  readonly #clips = new Set<string>();
 
-  constructor(
-    onResult: (simulation: Simulation) => void,
-    onError: (message: string) => void,
-  ) {
-    this.#onResult = onResult;
-    this.#onError = onError;
+  constructor(events: StreamEvents) {
+    this.#events = events;
     this.#worker = new Worker(new URL('./worker.js', import.meta.url), {
       type: 'module',
     });
     this.#worker.addEventListener(
       'message',
-      (event: MessageEvent<SimulationResponse>) => this.#receive(event.data),
+      (event: MessageEvent<FromWorker>) => this.#receive(event.data),
     );
     this.#worker.addEventListener('error', (event) =>
-      this.#onError(event.message || 'The simulation worker failed to start.'),
+      events.error(event.message || 'The simulation worker failed to start.'),
     );
   }
 
-  /** Whether a run is under way. */
-  get busy(): boolean {
-    return this.#running !== undefined;
+  /** Whether an advance is under way. */
+  get advancing(): boolean {
+    return this.#pending > 0;
   }
 
-  /** Simulates `doc` and returns the signals for the `wanted` port keys. */
-  request(doc: LabDocument, wanted: readonly string[]): void {
-    this.#waiting = { doc, wanted };
-
-    if (!this.#running) {
-      this.#send();
+  /** Runs `doc` from where the stream is, if it isn't already running it. */
+  load(doc: LabDocument): void {
+    if (doc !== this.#doc) {
+      this.#doc = doc;
+      this.#send({ type: 'load', doc });
     }
   }
 
-  #send(): void {
-    const next = this.#waiting;
-    if (!next) {
+  /** Watches these port keys, if they aren't the ones watched already. */
+  watch(keys: readonly string[]): void {
+    const signature = [...keys].sort().join('\n');
+    if (signature !== this.#watched) {
+      this.#watched = signature;
+      this.#send({ type: 'watch', keys });
+    }
+  }
+
+  /** Asks the stream to reach `until` seconds, unless an advance is under way. */
+  advance(until: number): void {
+    if (this.#pending === 0) {
+      this.#pending++;
+      this.#send({ type: 'advance', until });
+    }
+  }
+
+  /** Pushes a block, by full id, as a Button does. */
+  press(block: string): void {
+    this.#send({ type: 'press', block });
+  }
+
+  /** Hands the worker recordings, once each. */
+  clips(
+    clips: readonly {
+      readonly id: string;
+      readonly rate: number;
+      readonly data: Float32Array;
+    }[],
+  ): void {
+    const fresh = clips.filter((clip) => !this.#clips.has(clip.id));
+    for (const clip of fresh) {
+      this.#clips.add(clip.id);
+    }
+
+    if (fresh.length) {
+      this.#send({ type: 'clips', clips: fresh });
+    }
+  }
+
+  /** Whether the worker has a recording. */
+  hasClip(id: string): boolean {
+    return this.#clips.has(id);
+  }
+
+  /** Back to time 0; anything already on its way from before is dropped. */
+  reset(): void {
+    this.#epoch++;
+    this.#send({ type: 'reset' });
+  }
+
+  #send(message: ToWorker): void {
+    this.#worker.postMessage(message);
+  }
+
+  #receive(message: FromWorker): void {
+    if (message.type === 'failed') {
+      // Whatever was under way has stopped.
+      this.#pending = 0;
+      this.#events.error(message.error);
       return;
     }
 
-    this.#waiting = undefined;
-    const id = this.#nextId++;
-    this.#running = { id, doc: next.doc };
-    const request: SimulationRequest = {
-      id,
-      doc: next.doc,
-      wanted: next.wanted.map((key) => [key, this.#held.get(key)?.version]),
-    };
-    this.#worker.postMessage(request);
-  }
-
-  #receive(response: SimulationResponse): void {
-    const running = this.#running;
-    this.#running = undefined;
-
-    if (running?.id === response.id) {
-      if (response.ok) {
-        // Keep held signals the worker says are unchanged; take the new copies.
-        const held = new Map<string, Held>();
-        for (const copy of response.signals) {
-          held.set(copy.key, {
-            version: copy.version,
-            signal: { rate: copy.rate, data: copy.data },
-          });
-        }
-
-        for (const [key, version] of response.versions) {
-          const old = this.#held.get(key);
-          if (!held.has(key) && old?.version === version) {
-            held.set(key, old);
-          }
-        }
-
-        this.#held = held;
-        this.#onResult({
-          doc: running.doc,
-          statuses: new Map(response.statuses),
-          readings: new Map(response.readings),
-          signals: new Map(
-            [...held].map(([key, { signal }]) => [key, signal]),
-          ),
-          recomputed: response.recomputed,
-          errors: response.errors,
-          elapsed: response.elapsed,
-        });
-      } else {
-        this.#onError(response.error);
-      }
+    if (message.type === 'chunk') {
+      this.#pending = Math.max(0, this.#pending - 1);
     }
 
-    this.#send();
+    if (message.epoch !== this.#epoch) {
+      return;
+    }
+
+    switch (message.type) {
+      case 'status':
+        this.#events.status(new Map(message.statuses));
+        break;
+      case 'chunk':
+        this.#events.chunk(message);
+        break;
+      case 'history':
+        this.#events.history(message.samples);
+    }
   }
 }

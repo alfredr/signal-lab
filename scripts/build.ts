@@ -1,6 +1,7 @@
 // Builds the static app into dist/: compiled modules in dist/js, the page, stylesheet and fonts
-// from public/, and Temml (TeX to MathML) in dist/vendor. The result is a self-contained
-// directory any static host can serve.
+// from public/, and in dist/vendor Temml (TeX to MathML), the CMU Pronouncing Dictionary for
+// the Speech block, and the licenses of what the app is built from. The result is a
+// self-contained directory any static host can serve.
 
 import { execFileSync } from 'node:child_process';
 import {
@@ -12,6 +13,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+
+import { dictionary } from 'cmu-pronouncing-dictionary';
 
 export const root = fileURLToPath(new URL('..', import.meta.url));
 export const dist = `${root}dist`;
@@ -32,6 +35,20 @@ export function copyStatic(): void {
   for (const [target, source] of Object.entries(VENDOR)) {
     cpSync(`${root}node_modules/${source}`, `${dist}/vendor/${target}`);
   }
+
+  cpSync(`${root}licenses`, `${dist}/vendor/licenses`, { recursive: true });
+  writePronunciations();
+}
+
+/**
+ * The CMU Pronouncing Dictionary as the Speech block reads it, a word and its
+ * phonemes to a line, first pronunciations only.
+ */
+function writePronunciations(): void {
+  const lines = Object.entries(dictionary)
+    .filter(([word]) => !word.includes('('))
+    .map(([word, phones]) => `${word} ${phones}`);
+  writeFileSync(`${dist}/vendor/cmudict.txt`, `${lines.join('\n')}\n`);
 }
 
 /**

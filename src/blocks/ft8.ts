@@ -1,34 +1,116 @@
 // FT8: the weak-signal digital mode, as a transmitter and a decoder.
 
 import {
+  acquire,
+  bitCell,
+  bitsOfTone,
+  CODED_BITS,
+  costasTone,
+  dataBit,
   decode,
   encode,
+  grayTone,
+  hearSymbol,
   isSync,
+  schedule,
+  SLOT_SECONDS,
   SYMBOL_SECONDS,
   SYMBOLS,
   synthesize,
   toneBits,
   TRANSMISSION_SECONDS,
+  type Lock,
 } from '../dsp/ft8/ft8.ts';
-import { BlockError, defineBlock, type Reading } from '../engine/block.ts';
+import { crc14, ldpcEncode } from '../dsp/ft8/ldpc.ts';
+import {
+  bitsOf,
+  packMessage,
+  partialMessage,
+  PAYLOAD_BITS,
+  type Field,
+} from '../dsp/ft8/message.ts';
+import {
+  BlockError,
+  defineBlock,
+  RateError,
+  type Processor,
+  type Reading,
+} from '../engine/block.ts';
 import { si } from '../engine/format.ts';
 import { number, text } from '../engine/params.ts';
 import { sampleCount } from '../engine/signal.ts';
 import { rate } from './sources.ts';
 
+/** The parameters an FT8 transmission is sent with. */
+const sending = {
+  message: text({
+    label: 'Message',
+    default: 'CQ K1ABC FN42',
+    maxLength: 40,
+  }),
+  start: number({
+    label: 'Starts at',
+    unit: 's',
+    default: 0.5,
+    min: 0,
+    max: SLOT_SECONDS - TRANSMISSION_SECONDS,
+    step: 0.01,
+    help: `Into each slot. The transmission lasts ${TRANSMISSION_SECONDS.toFixed(2)} s.`,
+  }),
+};
+
+/** What an FT8 transmission is sending, at stream sample `n`. */
+function sendingAt(
+  encoded: {
+    readonly tones: readonly number[];
+    readonly codeword: readonly number[];
+  },
+  n: number,
+  rate: number,
+  start: number,
+): Reading[] {
+  const slot = Math.round(SLOT_SECONDS * rate);
+  const into = (((n - 1) % slot) + slot) % slot;
+  const s = Math.floor((into / rate - start) / SYMBOL_SECONDS);
+  // The coded bits of the symbols already sent.
+  let sent = 0;
+  for (let k = 0; k < Math.min(s, SYMBOLS); k++) {
+    sent += dataBit(k) === undefined ? 0 : 3;
+  }
+
+  const message = {
+    label: 'Sent',
+    value: partialMessage(encoded.codeword.slice(0, sent)),
+  };
+  if (n === 0 || s < 0 || s >= SYMBOLS) {
+    return [message];
+  }
+
+  const tone = encoded.tones[s];
+  return [
+    { label: 'Symbol', value: `${s + 1} of ${SYMBOLS}` },
+    { label: 'Tone', value: tone },
+    { label: 'Carries', value: isSync(s) ? 'sync' : toneBits(tone) },
+    message,
+  ];
+}
+
+/**
+ * The whole FT8 transmitter in one block, from before it was built from the
+ * encoder, a Gaussian filter and a VCO. Documents saved then still use it; the
+ * palette offers the subsystem instead.
+ */
 export const ft8Transmitter = defineBlock({
   kind: 'ft8-transmitter',
   label: 'FT8 transmitter',
   category: 'Digital modes',
-  description: String.raw`Sends an FT8 message as audio, as WSJT-X does: 79 tones 6.25 Hz apart, 0.16 s each, 12.6 s in all, carrying 77 bits plus a CRC and LDPC parity. Standard messages only, such as **CQ K1ABC FN42**, **K1ABC W9XYZ -12** or **K1ABC W9XYZ RR73**.`,
+  description: String.raw`Sends an FT8 message as audio in every 15 s slot, as WSJT-X does: 79 tones 6.25 Hz apart, 0.16 s each, smoothed into glides by a Gaussian (GFSK). The FT8 transmitter subsystem does the same with its steps open to view.`,
   inputs: [],
   outputs: [{ name: 'out' }],
+  reports: ['Symbol', 'Tone', 'Carries', 'Sent'],
+  glance: { labels: ['Symbol', 'Tone', 'Carries'], together: true },
   params: {
-    message: text({
-      label: 'Message',
-      default: 'CQ K1ABC FN42',
-      maxLength: 40,
-    }),
+    message: sending.message,
     offset: number({
       label: 'Audio offset',
       unit: 'Hz',
@@ -38,15 +120,7 @@ export const ft8Transmitter = defineBlock({
       step: 1,
       help: 'Where tone 0 sits; the signal takes the 50 Hz above it.',
     }),
-    start: number({
-      label: 'Starts at',
-      unit: 's',
-      default: 0.5,
-      min: 0,
-      max: 10,
-      step: 0.01,
-      help: `The transmission lasts ${TRANSMISSION_SECONDS.toFixed(2)} s.`,
-    }),
+    start: sending.start,
     rate: rate(12000),
   },
   summary: (p) => p.message.trim().toUpperCase(),
@@ -58,47 +132,326 @@ export const ft8Transmitter = defineBlock({
     }
 
     const rate = context.outputRates[0];
-    const audio = synthesize(
-      encoded.tones,
-      rate,
-      p.offset,
-      p.start,
-      sampleCount(context.duration, rate),
-    );
-    // What it sends symbol by symbol, for readouts that follow the playhead.
-    const track = (values: readonly (number | string)[]) => ({
-      start: p.start,
-      step: SYMBOL_SECONDS,
-      values,
-    });
-    const { tones } = encoded;
-    const readings: Reading[] = [
-      {
-        label: 'Symbol',
-        value: `1–${SYMBOLS}`,
-        track: track(tones.map((_, s) => `${s + 1} of ${SYMBOLS}`)),
-      },
-      {
-        label: 'Tone',
-        value: '0–7',
-        track: track(tones),
-      },
-      {
-        label: 'Carries',
-        value: `${encoded.codeword.length} bits`,
-        track: track(
-          tones.map((tone, s) => (isSync(s) ? 'sync' : toneBits(tone))),
-        ),
-      },
-    ];
+    const slot = Math.round(SLOT_SECONDS * rate);
+    const audio = synthesize(encoded.tones, rate, p.offset, p.start, slot);
+    let n = sampleCount(context.time, rate);
     return {
       process(_, [out], start, end) {
-        out.set(audio.subarray(start, end), start);
+        for (let i = start; i < end; i++, n++) {
+          out[i] = audio[n % slot];
+        }
       },
-      readings: () => readings,
+      // What it was sending at the end of the latest chunk.
+      readings: () => sendingAt(encoded, n, rate, p.start),
     };
   },
 });
+
+/**
+ * A stage between the message and the tones, as a processor. The coded bits
+ * pass between stages as NRZ (+1 for a 1, -1 for a 0, 0 between bits), each in
+ * its own cell of time (see bitCell). A stage passes on the first `passed`
+ * bits as they arrive, listening to each in the middle of its cell, and then
+ * sends the bits it adds, worked out by `add` from the ones it heard, `count`
+ * in all. Everything starts over with each slot.
+ */
+function bitStage(
+  rate: number,
+  time: number,
+  start: number,
+  passed: number,
+  count: number,
+  add: (heard: readonly number[]) => readonly number[],
+  describe: (state: {
+    /** The bit it is sending, if it is sending one. */
+    readonly bit: number | undefined;
+    /** How many bits it has sent so far this slot. */
+    readonly done: number;
+    readonly added: readonly number[] | undefined;
+  }) => Reading[],
+): Processor {
+  const slot = Math.round(SLOT_SECONDS * rate);
+  const cells = Array.from({ length: count }, (_, k) => {
+    const { from, to } = bitCell(k);
+    return {
+      from: Math.round((start + from) * rate),
+      to: Math.round((start + to) * rate),
+    };
+  });
+  const middles = cells.map((c) => Math.floor((c.from + c.to) / 2));
+  let n = sampleCount(time, rate);
+  let heard: number[] = [];
+  let added: readonly number[] | undefined = passed ? undefined : add([]);
+  // The cell the stream is in or next comes to.
+  let k = 0;
+  const cellAt = (at: number) => {
+    while (k > 0 && at < cells[k - 1]!.to) {
+      k--;
+    }
+
+    while (k < count && at >= cells[k]!.to) {
+      k++;
+    }
+
+    return k < count && at >= cells[k]!.from ? k : undefined;
+  };
+
+  return {
+    process([x], [out], first, end) {
+      for (let i = first; i < end; i++, n++) {
+        const at = n % slot;
+        if (at === 0) {
+          heard = [];
+          added = passed ? undefined : added;
+          k = 0;
+        }
+
+        const cell = cellAt(at);
+        if (cell === undefined) {
+          out[i] = 0;
+        } else if (cell < passed) {
+          out[i] = x?.[i] ?? 0;
+
+          if (at === middles[cell]) {
+            heard[cell] = (x?.[i] ?? 0) > 0 ? 1 : 0;
+
+            if (cell === passed - 1) {
+              added = add(heard);
+            }
+          }
+        } else {
+          const bit = added?.[cell - passed];
+          out[i] = bit === undefined ? 0 : bit ? 1 : -1;
+        }
+      }
+    },
+    readings: () => {
+      const bit = cellAt((((n - 1) % slot) + slot) % slot);
+      // `k` is now the cell it is in, or the next: the ones before are done.
+      return describe({ bit, done: k, added });
+    },
+  };
+}
+
+/** The bit a stage is on, as "12 of 77". */
+const onBit = (bit: number | undefined, count: number): Reading[] =>
+  bit === undefined || bit >= count
+    ? []
+    : [{ label: 'Bit', value: `${bit + 1} of ${count}` }];
+
+export const FT8_MESSAGE = 'ft8-message';
+
+export const ft8Message = defineBlock({
+  kind: FT8_MESSAGE,
+  label: 'FT8 message',
+  category: 'Digital modes',
+  description: String.raw`Packs a standard FT8 message into its 77 bits: each callsign into 28, the grid or report into 15, and 3 for the kind of message. Standard messages only, such as **CQ K1ABC FN42**, **K1ABC W9XYZ -12** or **K1ABC W9XYZ RR73**.
+
+A callsign is a number written in a mixed base: each character's place in the alphabet for its position is one digit, worth all the alphabets after it, counted above the numbers kept for CQ, DE, QRZ and hashed calls. A grid such as FN42 is written the same way. **Packing**, below, works out each field and lights its bits as they go out.
+
+It sends the bits out in every 15 s slot, one each third of a symbol, as **NRZ**: $+1$ for a 1, $-1$ for a 0, 0 between bits. They go out most significant first, so **Sent** fills in from the left, and **Field** and **Number** show the field the bits belong to. Its bits run a symbol ahead of the tones that will carry them, so the stages after it have each symbol's bits in time.`,
+  inputs: [],
+  outputs: [{ name: 'bits' }],
+  reports: ['Sent', 'Field', 'Number', 'Bit'],
+  glance: { labels: ['Field', 'Number'], together: true },
+  params: { ...sending, rate: rate(12000) },
+  summary: (p) => p.message.trim().toUpperCase(),
+  rates: (_, p) => [p.rate],
+  create(p, context) {
+    const packed = packMessage(p.message);
+    if (!packed.ok) {
+      throw new BlockError(packed.error);
+    }
+
+    return bitStage(
+      context.outputRates[0],
+      context.time,
+      p.start,
+      0,
+      PAYLOAD_BITS,
+      () => packed.bits,
+      ({ bit, done }) => {
+        // The field going out, or between symbols the one coming next.
+        const at = bit ?? (done > 0 && done < PAYLOAD_BITS ? done : undefined);
+        const field =
+          at === undefined ? undefined : fieldAt(packed.fields, at);
+        return [
+          {
+            label: 'Sent',
+            value: partialMessage(
+              packed.bits.slice(0, Math.min(done, PAYLOAD_BITS)),
+            ),
+          },
+          ...(field
+            ? [
+                {
+                  label: 'Field',
+                  value: `${field.name}: ${field.text || 'blank'}`,
+                },
+                { label: 'Number', value: String(field.value) },
+              ]
+            : []),
+          ...onBit(bit, PAYLOAD_BITS),
+        ];
+      },
+    );
+  },
+});
+
+/** The field that bit `k` of the 77 belongs to. */
+function fieldAt(fields: readonly Field[], k: number): Field | undefined {
+  let end = 0;
+  return fields.find((field) => (end += field.bits.length) > k);
+}
+
+/** The bit timing of a stage after the message, set to match it. */
+const staging = { start: sending.start };
+
+export const crcBlock = defineBlock({
+  kind: 'crc14',
+  label: 'CRC-14',
+  category: 'Digital modes',
+  description: String.raw`Adds FT8's cyclic redundancy check to the 77 message bits: the remainder of the message (with five zeros after it) divided by the polynomial $x^{14} + x^{13} + x^{10} + x^9 + x^8 + x^6 + x^4 + x^2 + x + 1$, 14 bits that the receiver recomputes to tell a good decode from a bad one. It passes the message bits on as they come and sends the 14 CRC bits after them: 91 in all, as an NRZ bit stream. Its **Starts at** has to match the message's.`,
+  inputs: [{ name: 'bits' }],
+  outputs: [{ name: 'bits' }],
+  reports: ['CRC', 'Bit'],
+  glance: { labels: ['CRC', 'Bit'] },
+  params: staging,
+  summary: () => '+ 14 bits',
+  create(p, context) {
+    return bitStage(
+      context.inputRates[0],
+      context.time,
+      p.start,
+      PAYLOAD_BITS,
+      PAYLOAD_BITS + 14,
+      (heard) => bitsOf(crc14([...heard, 0, 0, 0, 0, 0]), 14),
+      ({ bit, added }) => [
+        ...(added ? [{ label: 'CRC', value: added.join('') }] : []),
+        ...onBit(bit, PAYLOAD_BITS + 14),
+      ],
+    );
+  },
+});
+
+export const ldpcBlock = defineBlock({
+  kind: 'ldpc',
+  label: 'LDPC encoder',
+  category: 'Digital modes',
+  description: String.raw`FT8's (174, 91) low-density parity-check code: 83 parity bits, each the XOR of a different selection of the 91 message and CRC bits. The decoder uses them to correct the bits it hears wrong. The code is systematic: the 91 bits pass on as they come, and the parity follows them, 174 in all, as an NRZ bit stream. Its **Starts at** has to match the message's.`,
+  inputs: [{ name: 'bits' }],
+  outputs: [{ name: 'bits' }],
+  reports: ['Bit'],
+  params: staging,
+  summary: () => '+ 83 parity',
+  create(p, context) {
+    return bitStage(
+      context.inputRates[0],
+      context.time,
+      p.start,
+      PAYLOAD_BITS + 14,
+      CODED_BITS,
+      (heard) => ldpcEncode(heard).slice(PAYLOAD_BITS + 14),
+      ({ bit }) => onBit(bit, CODED_BITS),
+    );
+  },
+});
+
+export const FT8_MAPPER = 'ft8-mapper';
+
+export const ft8Mapper = defineBlock({
+  kind: FT8_MAPPER,
+  label: 'FT8 symbol mapper',
+  category: 'Digital modes',
+  description: String.raw`Turns the 174 coded bits into FT8's 79 tones, one every 0.16 s. It reads the bits three at a time and Gray-codes each three onto a tone from 0 to 7, so tones next to each other differ in one bit, and a tone heard one off costs one bit. It sets the 58 data tones between three 7-tone Costas arrays (3 1 4 0 6 5 2), at the start, middle and end, which the receiver searches for to find the signal in time and frequency.
+
+**tone** is the tone being sent, held for each symbol; **key** is 1 while the transmission is on, rounded off at each end. Its **Starts at** has to match the message's.`,
+  inputs: [{ name: 'bits' }],
+  outputs: [{ name: 'tone' }, { name: 'key' }],
+  reports: ['Symbol', 'Tone', 'Carries'],
+  glance: { labels: ['Symbol', 'Tone', 'Carries'], together: true },
+  params: staging,
+  summary: () => 'Gray + Costas',
+  rates: ([r]) => {
+    if (r === undefined) {
+      throw new RateError('The symbol mapper has no bits coming in.');
+    }
+
+    return [r, r];
+  },
+  create(p, context) {
+    const rate = context.inputRates[0];
+    const slot = Math.round(SLOT_SECONDS * rate);
+    const { key } = schedule(
+      new Array<number>(SYMBOLS).fill(0),
+      rate,
+      p.start,
+      slot,
+    );
+    const middles = Array.from({ length: CODED_BITS }, (_, k) => {
+      const { from, to } = bitCell(k);
+      return Math.floor((p.start + (from + to) / 2) * rate);
+    });
+    const first = Math.round(p.start * rate);
+    const perSymbol = Math.round(SYMBOL_SECONDS * rate);
+    let heard: number[] = [];
+    let next = 0;
+    let n = sampleCount(context.time, rate);
+    const toneOf = (s: number) => {
+      if (isSync(s)) {
+        return costasTone(s);
+      }
+
+      const k = dataBit(s)!;
+      const [a, b, c] = [heard[k], heard[k + 1], heard[k + 2]];
+      return a === undefined || b === undefined || c === undefined
+        ? undefined
+        : grayTone(a, b, c);
+    };
+
+    const symbolAt = (at: number) => {
+      const s = Math.floor((at - first) / perSymbol);
+      return at >= first && s < SYMBOLS ? s : undefined;
+    };
+
+    return {
+      process([x], [tone, keyed], start, end) {
+        for (let i = start; i < end; i++, n++) {
+          const at = n % slot;
+          if (at === 0) {
+            heard = [];
+            next = 0;
+          }
+
+          if (next < CODED_BITS && at === middles[next]) {
+            heard[next++] = x[i] > 0 ? 1 : 0;
+          }
+
+          const s = symbolAt(at);
+          tone[i] = s === undefined ? 0 : (toneOf(s) ?? 0);
+          keyed[i] = key[at];
+        }
+      },
+      readings(): Reading[] {
+        const s = symbolAt((((n - 1) % slot) + slot) % slot);
+        const t = s === undefined ? undefined : toneOf(s);
+        return s === undefined || t === undefined
+          ? []
+          : [
+              { label: 'Symbol', value: `${s + 1} of ${SYMBOLS}` },
+              { label: 'Tone', value: t },
+              { label: 'Carries', value: isSync(s) ? 'sync' : toneBits(t) },
+            ];
+      },
+    };
+  },
+});
+
+/**
+ * How far into a slot the decoder starts looking for a signal, in seconds:
+ * once a first Costas array can have arrived.
+ */
+const LOCK_FROM = 2;
 
 /**
  * The decoder works at 6.4 kHz, so it needs at least that much bandwidth to
@@ -110,9 +463,21 @@ export const ft8Decoder = defineBlock({
   kind: 'ft8-decoder',
   label: 'FT8 decoder',
   category: 'Digital modes',
-  description: String.raw`Finds the strongest FT8 signal in its search band and decodes it: a search for the three Costas sync arrays, soft decisions on each tone, LDPC error correction, then the CRC. One pass and one signal, so it holds to about $-17$ dB SNR in 2500 Hz where WSJT-X reaches $-21$. Its **Tone heard** reading follows the playhead, marking each symbol it heard wrong once the message decodes.`,
+  description: String.raw`Listens to each 15 s slot. Once the first Costas sync array has arrived it locks on, and reads each symbol's tone as it comes in: **Heard** is the message from those tones alone, filling in from the left as the message bits arrive, with nothing yet to correct their errors. As the slot ends it decodes the strongest FT8 signal in its search band properly: a search for all three Costas arrays, soft decisions on each tone, LDPC error correction using the parity, then the CRC. That is **Message**. One pass and one signal, so it holds to about $-17$ dB SNR in 2500 Hz where WSJT-X reaches $-21$. Once a message decodes, **Tone errors** counts the symbols it heard wrong.`,
   inputs: [{ name: 'audio' }],
   outputs: [],
+  glance: { labels: ['Message', 'Heard'] },
+  reports: [
+    'Message',
+    'Heard',
+    'Bits heard',
+    'SNR',
+    'Frequency',
+    'Starts at',
+    'Tone errors',
+    'Sync',
+    'LDPC iterations',
+  ],
   params: {
     low: number({
       label: 'Search from',
@@ -140,71 +505,108 @@ export const ft8Decoder = defineBlock({
       );
     }
 
-    let audio: Float32Array | undefined;
-    return {
-      // Never in a loop (it has no outputs), so this sees the whole window.
-      process([x]) {
-        audio = x;
-      },
-      readings(): Reading[] {
-        if (!audio) {
-          return [];
+    const slot = Math.round(SLOT_SECONDS * rate);
+    // The slot so far; a decoder started partway through hears silence before.
+    const audio = new Float32Array(slot);
+    let n = sampleCount(context.time, rate);
+    let settings = p;
+    let decoded: Reading[] = [];
+    // Listening as the slot goes: the signal locked onto, the next symbol to
+    // read, the coded bits read so far, and when it last looked for a signal.
+    let lock: Lock | undefined;
+    let next = 0;
+    let bits: number[] = [];
+    let looked = 0;
+    const listen = (at: number) => {
+      if (!lock && at >= LOCK_FROM * rate && at - looked >= rate) {
+        looked = at;
+        lock = acquire(
+          audio.subarray(0, at),
+          rate,
+          settings.low,
+          Math.max(settings.low + 100, settings.high),
+        );
+      }
+
+      while (
+        lock &&
+        next < SYMBOLS &&
+        (lock.start + (next + 1) * SYMBOL_SECONDS) * rate <= at
+      ) {
+        if (dataBit(next) !== undefined) {
+          bits.push(...bitsOfTone(hearSymbol(audio, rate, lock, next)));
         }
 
-        const result = decode(
-          audio,
-          rate,
-          p.low,
-          Math.max(p.low + 100, p.high),
-        );
-        const synced = result.sync >= 2.5;
-        // Once the message decodes, re-encoding it says which tones were heard wrong.
-        const sent = result.text ? encode(result.text) : undefined;
-        const truth = sent?.ok ? sent.tones : undefined;
-        const wrong = truth
-          ? result.heard.filter((tone, s) => tone !== truth[s]).length
-          : undefined;
-        const heard: Reading[] = synced
+        next++;
+      }
+    };
+
+    return {
+      // It has no outputs, so it is never in a loop and gets whole chunks.
+      process([x], _, start, end) {
+        for (let i = start; i < end; i++, n++) {
+          const at = n % slot;
+          audio[at] = x[i];
+
+          if (at === slot - 1) {
+            decoded = decodeSlot(audio, rate, settings.low, settings.high);
+            lock = undefined;
+            next = 0;
+            bits = [];
+            looked = 0;
+          }
+        }
+
+        listen(n % slot);
+      },
+      readings: (): Reading[] => {
+        const heard: Reading[] = lock
           ? [
-              {
-                label: 'Tone heard',
-                value:
-                  wrong === undefined
-                    ? `${result.heard.length} tones`
-                    : `${wrong} of ${SYMBOLS} wrong`,
-                track: {
-                  start: result.start,
-                  step: SYMBOL_SECONDS,
-                  values: result.heard.map((tone, s) =>
-                    !truth
-                      ? tone
-                      : tone === truth[s]
-                        ? `${tone} ✓`
-                        : `${tone} ✗ sent ${truth[s]}`,
-                  ),
-                },
-              },
+              { label: 'Heard', value: partialMessage(bits) },
+              { label: 'Bits heard', value: `${bits.length} of 174` },
             ]
           : [];
-        return [
-          {
-            label: 'Message',
-            value:
-              result.text ??
-              (synced ? 'sync found, no decode' : 'nothing found'),
-          },
-          ...(synced
-            ? ([
-                { label: 'SNR', value: result.snr, unit: 'dB' },
-                { label: 'Frequency', value: result.frequency, unit: 'Hz' },
-                { label: 'Starts at', value: result.start, unit: 's' },
-              ] satisfies Reading[])
-            : []),
-          ...heard,
-          { label: 'Sync', value: result.sync },
-          { label: 'LDPC iterations', value: result.iterations },
-        ];
+        return [...decoded, ...heard];
+      },
+      update(changed) {
+        settings = changed;
+        return true;
       },
     };
   },
 });
+
+function decodeSlot(
+  audio: Float32Array,
+  rate: number,
+  low: number,
+  high: number,
+): Reading[] {
+  const result = decode(audio, rate, low, Math.max(low + 100, high));
+  const synced = result.sync >= 2.5;
+  // Once the message decodes, re-encoding it says which tones were heard wrong.
+  const sent = result.text ? encode(result.text) : undefined;
+  const truth = sent?.ok ? sent.tones : undefined;
+  const wrong = truth
+    ? result.heard.filter((tone, s) => tone !== truth[s]).length
+    : undefined;
+  return [
+    {
+      label: 'Message',
+      value:
+        result.text ?? (synced ? 'sync found, no decode' : 'nothing found'),
+    },
+    ...(synced
+      ? ([
+          { label: 'SNR', value: result.snr, unit: 'dB' },
+          { label: 'Frequency', value: result.frequency, unit: 'Hz' },
+          { label: 'Starts at', value: result.start, unit: 's' },
+        ] satisfies Reading[])
+      : []),
+    ...(wrong === undefined
+      ? []
+      : [{ label: 'Tone errors', value: `${wrong} of ${SYMBOLS}` }]),
+    { label: 'Sync', value: result.sync },
+    { label: 'LDPC iterations', value: result.iterations },
+  ];
+}

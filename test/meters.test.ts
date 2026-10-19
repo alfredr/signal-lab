@@ -1,13 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { circuit, simulator } from './helpers.ts';
+import type { SimulationResult } from '../src/engine/simulator.ts';
+import { circuit, run } from './helpers.ts';
 
-const reading = (
-  result: ReturnType<ReturnType<typeof simulator>['run']>,
-  block: string,
-  label: string,
-) => {
+const reading = (result: SimulationResult, block: string, label: string) => {
   const value = result.readings
     .get(block)
     ?.find((r) => r.label === label)?.value;
@@ -17,12 +14,12 @@ const reading = (
 
 describe('meters', () => {
   test('a meter reads a unit sine as -3 dB, RMS 0.707, peak 1', () => {
-    const result = simulator().run(
+    const result = run(
       circuit(
         1,
         [
           ['tone', 'oscillator', { frequency: 1000, rate: 48000 }],
-          ['meter', 'meter', { from: 0 }],
+          ['meter', 'meter', { window: 1 }],
         ],
         [['tone', 'meter']],
       ),
@@ -33,17 +30,18 @@ describe('meters', () => {
   });
 
   test('an SNR meter finds the delay and measures the noise added', () => {
-    // A sweep (a tone that never repeats, so its delay is unambiguous) of
-    // power 0.5, plus noise of 0.01 power over the whole band: 17 dB.
-    const result = simulator().run(
+    // A sweep (a tone that doesn't repeat within a window, so its delay is
+    // unambiguous) of power 0.5, plus noise of 0.01 power over the whole band:
+    // 17 dB.
+    const result = run(
       circuit(
         4,
         [
-          ['tone', 'sweep', { from: 200, to: 3000, rate: 12000 }],
+          ['tone', 'sweep', { from: 200, to: 3000, period: 4, rate: 12000 }],
           ['late', 'delay', { time: 0.005 }],
           ['noise', 'noise', { level: -20, bandwidth: 6000, rate: 12000 }],
           ['sum', 'adder'],
-          ['snr', 'snr-meter', { from: 0.1, maxDelay: 0.02 }],
+          ['snr', 'snr-meter', { window: 1, maxDelay: 0.02 }],
         ],
         [
           ['tone', 'late'],
@@ -60,14 +58,14 @@ describe('meters', () => {
 
   test('a delay of a fraction of a sample does not cap the SNR', () => {
     // Up by 3 and down by 3: clean, but shifted by a non-integer number of samples.
-    const result = simulator().run(
+    const result = run(
       circuit(
-        1,
+        1.5,
         [
           ['tone', 'oscillator', { frequency: 1500, rate: 12000 }],
           ['up', 'resample', { direction: 'up', factor: 3 }],
           ['down', 'resample', { direction: 'down', factor: 3 }],
-          ['snr', 'snr-meter', { from: 0.1 }],
+          ['snr', 'snr-meter', { window: 0.5 }],
         ],
         [
           ['tone', 'up'],

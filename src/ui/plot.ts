@@ -5,10 +5,10 @@ import { fft, floorPowerOfTwo } from '../dsp/fft.ts';
 import { welch, type Spectrum } from '../dsp/spectrum.ts';
 import { decibels, si, significant, toDecibels } from '../engine/format.ts';
 import type { Signal } from '../engine/signal.ts';
+import type { Trace } from './live.ts';
 
 export type Theme = {
   readonly surface: string;
-  readonly accent: string;
   readonly ink: string;
   readonly muted: string;
   readonly rule: string;
@@ -21,7 +21,6 @@ export function readTheme(element: Element): Theme {
   const get = (name: string) => style.getPropertyValue(name).trim();
   return {
     surface: get('--surface'),
-    accent: get('--accent'),
     ink: get('--ink'),
     muted: get('--muted'),
     rule: get('--rule'),
@@ -111,16 +110,14 @@ function drawAxes(
   y: Range,
   xLabel: (v: number) => string,
   yLabel: (v: number) => string,
-  /** Put y.start at the top, as a waterfall does with time. */
-  downward = false,
+  /** Where y has data, if not all of it: ticks outside are left off. */
+  yData: Range = y,
 ): void {
   const { ctx, left, top, plotWidth, plotHeight } = frame;
   const px = (v: number) =>
     left + ((v - x.start) / (x.end - x.start)) * plotWidth;
-  const py = (v: number) => {
-    const t = (v - y.start) / (y.end - y.start);
-    return downward ? top + t * plotHeight : top + plotHeight - t * plotHeight;
-  };
+  const py = (v: number) =>
+    top + plotHeight - ((v - y.start) / (y.end - y.start)) * plotHeight;
 
   ctx.lineWidth = 1;
   ctx.font = `400 11px ${theme.mono}`;
@@ -151,6 +148,10 @@ function drawAxes(
     y.end,
     Math.max(2, Math.floor(plotHeight / 36)),
   )) {
+    if (v < yData.start || v > yData.end) {
+      continue;
+    }
+
     const at = Math.round(py(v)) + 0.5;
     ctx.strokeStyle = v === 0 ? theme.rule : theme.grid;
     ctx.beginPath();
@@ -162,39 +163,6 @@ function drawAxes(
 
   ctx.strokeStyle = theme.rule;
   ctx.strokeRect(left + 0.5, top + 0.5, plotWidth - 1, plotHeight - 1);
-}
-
-/** The playhead: a line across the plot at `at` along one axis. */
-function drawCursor(
-  frame: Frame,
-  theme: Theme,
-  axis: 'x' | 'y',
-  at: number,
-): void {
-  const { ctx, left, top, plotWidth, plotHeight } = frame;
-  const inside =
-    axis === 'x'
-      ? at >= left && at <= left + plotWidth
-      : at >= top && at <= top + plotHeight;
-  if (!inside) {
-    return;
-  }
-
-  ctx.save();
-  ctx.strokeStyle = theme.accent;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-
-  if (axis === 'x') {
-    ctx.moveTo(Math.round(at) + 0.5, top);
-    ctx.lineTo(Math.round(at) + 0.5, top + plotHeight);
-  } else {
-    ctx.moveTo(left, Math.round(at) + 0.5);
-    ctx.lineTo(left + plotWidth, Math.round(at) + 0.5);
-  }
-
-  ctx.stroke();
-  ctx.restore();
 }
 
 function drawReadout(
@@ -252,22 +220,126 @@ function extent(data: Float32Array): Range {
   return cached;
 }
 
-export function timeSpan(signal: Signal): Range {
-  return { start: 0, end: Math.max(signal.data.length, 1) / signal.rate };
+/** The most pixel steps spent joining samples up in one phosphor frame. */
+const PHOSPHOR_BUDGET = 3_000_000;
+
+/**
+ * Many samples to a pixel, drawn like the phosphor of an analog scope: every
+ * sample, and the line on to the next, lights the pixels it passes, and a
+ * pixel glows brighter the more of the trace lands on it. A carrier fills in
+ * as a band whose edges glow where it turns, the envelope stands out, and
+ * noise is a haze rather than a solid block.
+ */
+function drawPhosphor(
+  frame: Frame,
+  slice: Slice,
+  view: Range,
+  y: Range,
+  color: string,
+): void {
+  const { ctx, left, top, plotWidth, plotHeight } = frame;
+  const { data, rate, first } = slice;
+  const width = Math.max(1, Math.round(plotWidth));
+  const height = Math.max(1, Math.round(plotHeight));
+  const glow = new Float32Array(width * height);
+  const span = view.end - view.start;
+  const x = (i: number) => ((first + i) / rate - view.start) / span;
+  const row = (v: number) =>
+    Math.min(
+      height - 1,
+      Math.max(0, ((y.end - v) / (y.end - y.start)) * height),
+    );
+  const i0 = Math.max(0, Math.floor(view.start * rate) - first);
+  const i1 = Math.min(data.length, Math.ceil(view.end * rate) - first + 1);
+  let budget = PHOSPHOR_BUDGET;
+  let last: number | undefined;
+  for (let i = i0; i < i1; i++) {
+    const column = Math.floor(x(i) * width);
+    const r = row(data[i]);
+    if (column >= 0 && column < width) {
+      // The line from the last sample, spread over the rows it crosses.
+      const from = last ?? r;
+      const low = Math.floor(Math.min(from, r));
+      const high = Math.floor(Math.max(from, r));
+      if (high > low && budget > 0) {
+        const share = 1 / (high - low + 1);
+        for (let k = low; k <= high; k++) {
+          glow[k * width + column] += share;
+        }
+
+        budget -= high - low;
+      } else {
+        glow[Math.floor(r) * width + column] += 1;
+      }
+    }
+
+    last = r;
+  }
+
+  let brightest = 0;
+  for (let k = 0; k < glow.length; k++) {
+    brightest = Math.max(brightest, glow[k]);
+  }
+
+  // The color as numbers: a canvas reads any CSS color back as hex or rgba().
+  ctx.fillStyle = color;
+  const parsed = ctx.fillStyle;
+  const hex = /^#([0-9a-f]{6})$/i.exec(parsed)?.[1];
+  const rgb = hex
+    ? [0, 2, 4].map((k) => parseInt(hex.slice(k, k + 2), 16))
+    : (/(\d+)\D+(\d+)\D+(\d+)/.exec(parsed)?.slice(1, 4).map(Number) ?? [
+        128, 128, 128,
+      ]);
+  const image = new ImageData(width, height);
+  const scale = Math.log1p(brightest);
+  for (let k = 0; k < glow.length; k++) {
+    if (glow[k] > 0) {
+      image.data[4 * k] = rgb[0];
+      image.data[4 * k + 1] = rgb[1];
+      image.data[4 * k + 2] = rgb[2];
+      image.data[4 * k + 3] =
+        255 * Math.min(1, 0.18 + (0.82 * Math.log1p(glow[k])) / scale);
+    }
+  }
+
+  const offscreen = document.createElement('canvas');
+  offscreen.width = width;
+  offscreen.height = height;
+  offscreen.getContext('2d')?.putImageData(image, 0, 0);
+  ctx.drawImage(offscreen, left, top, plotWidth, plotHeight);
+}
+
+/** A stretch of a stream's samples: `data[0]` is sample number `first`. */
+export type Slice = Signal & { readonly first: number };
+
+/** The vertical range for samples: their extent, taking in 0, with a margin. */
+function fit(data: Float32Array): Range {
+  let { start: low, end: high } = extent(data);
+  low = Math.min(low, 0);
+  high = Math.max(high, 0);
+
+  if (high - low < 1e-12) {
+    [low, high] = [low - 1, high + 1];
+  }
+
+  const pad = (high - low) * 0.08;
+  return { start: low - pad, end: high + pad };
 }
 
 /**
- * Draws the signal over `view` (seconds); `hoverX` is a canvas x position to
- * read out, and `cursor` the playhead's time.
+ * Draws the samples over `view` (seconds), between `bounds` (vertically) if
+ * given; `hoverX` is a canvas x position to read out. The time axis counts
+ * from `origin`, so its labels stay put while the samples move.
  */
 export function drawTime(
   canvas: HTMLCanvasElement,
   theme: Theme,
-  signal: Signal,
+  slice: Slice,
   view: Range,
   color: string,
   hoverX?: number,
-  cursor?: number,
+  bounds?: Range,
+  origin = 0,
 ): void {
   const frame = prepare(canvas);
   if (!frame) {
@@ -275,27 +347,12 @@ export function drawTime(
   }
 
   const { ctx, left, top, plotWidth, plotHeight } = frame;
-  const { data, rate } = signal;
-
-  let { start: low, end: high } = extent(data);
-  if (low > 0) {
-    low = 0;
-  }
-
-  if (high < 0) {
-    high = 0;
-  }
-
-  if (high - low < 1e-12) {
-    [low, high] = [low - 1, high + 1];
-  }
-
-  const pad = (high - low) * 0.08;
-  const y = { start: low - pad, end: high + pad };
+  const { data, rate, first: offset } = slice;
+  const y = bounds ?? fit(data);
   drawAxes(
     frame,
     theme,
-    view,
+    { start: view.start - origin, end: view.end - origin },
     y,
     (v) => si(v, 's'),
     (v) => significant(v),
@@ -316,65 +373,21 @@ export function drawTime(
 
   const perPixel = ((view.end - view.start) * rate) / plotWidth;
   if (perPixel > 2) {
-    // Each pixel column becomes a bar from its lowest to its highest sample.
-    const tops: number[] = [];
-    const bottoms: number[] = [];
-    for (let column = 0; column < plotWidth; column++) {
-      const i0 = Math.max(
-        0,
-        Math.floor(
-          (view.start + ((view.end - view.start) * column) / plotWidth) * rate,
-        ),
-      );
-      const i1 = Math.min(
-        data.length,
-        Math.floor(
-          (view.start + ((view.end - view.start) * (column + 1)) / plotWidth) *
-            rate,
-        ),
-      );
-      let lo = Infinity;
-      let hi = -Infinity;
-      for (let i = i0; i < Math.max(i1, i0 + 1) && i < data.length; i++) {
-        if (data[i] < lo) {
-          lo = data[i];
-        }
-
-        if (data[i] > hi) {
-          hi = data[i];
-        }
-      }
-
-      tops.push(hi === -Infinity ? NaN : py(hi));
-      bottoms.push(lo === Infinity ? NaN : py(lo));
-    }
-
-    ctx.beginPath();
-
-    for (let column = 0; column < plotWidth; column++) {
-      if (Number.isNaN(tops[column])) {
-        continue;
-      }
-
-      ctx.rect(
-        left + column,
-        tops[column],
-        1,
-        Math.max(1, bottoms[column] - tops[column]),
-      );
-    }
-
-    ctx.fill();
+    drawPhosphor(frame, slice, view, y, color);
   } else {
-    const first = Math.max(0, Math.floor(view.start * rate) - 1);
-    const last = Math.min(data.length - 1, Math.ceil(view.end * rate) + 1);
+    const first = Math.max(0, Math.floor(view.start * rate) - offset - 1);
+    const last = Math.min(
+      data.length - 1,
+      Math.ceil(view.end * rate) - offset + 1,
+    );
+    const at = (i: number) => px((i + offset) / rate);
     ctx.beginPath();
 
     for (let i = first; i <= last; i++) {
       if (i === first) {
-        ctx.moveTo(px(i / rate), py(data[i]));
+        ctx.moveTo(at(i), py(data[i]));
       } else {
-        ctx.lineTo(px(i / rate), py(data[i]));
+        ctx.lineTo(at(i), py(data[i]));
       }
     }
 
@@ -384,7 +397,7 @@ export function drawTime(
     if (perPixel < 0.12) {
       for (let i = first; i <= last; i++) {
         ctx.beginPath();
-        ctx.arc(px(i / rate), py(data[i]), 2.5, 0, 2 * Math.PI);
+        ctx.arc(at(i), py(data[i]), 2.5, 0, 2 * Math.PI);
         ctx.fill();
       }
     }
@@ -392,18 +405,17 @@ export function drawTime(
 
   ctx.restore();
 
-  if (cursor !== undefined) {
-    drawCursor(frame, theme, 'x', px(cursor));
-  }
-
   if (hoverX !== undefined && hoverX >= left && hoverX <= left + plotWidth) {
     const t =
       view.start + ((hoverX - left) / plotWidth) * (view.end - view.start);
-    const i = Math.min(data.length - 1, Math.max(0, Math.round(t * rate)));
+    const i = Math.min(
+      data.length - 1,
+      Math.max(0, Math.round(t * rate) - offset),
+    );
     drawReadout(
       frame,
       theme,
-      `${si(i / rate, 's', 4)}   ${significant(data[i], 4)}`,
+      `${si((i + offset) / rate, 's', 4)}   ${significant(data[i], 4)}`,
       hoverX,
     );
   }
@@ -437,7 +449,11 @@ function spectrumOf(signal: Signal, size: number): Spectrum {
   return spectrum;
 }
 
-/** Draws the spectrum over `view` (Hz) in dB, sine-calibrated (see welch). */
+/**
+ * Draws the spectrum over `view` (Hz) in dB, sine-calibrated (see welch). The
+ * top of the scale is the loudest level rounded up to 10 dB with a margin, or
+ * what `hold` makes of that, to keep it steady.
+ */
 export function drawSpectrum(
   canvas: HTMLCanvasElement,
   theme: Theme,
@@ -445,6 +461,7 @@ export function drawSpectrum(
   view: Range,
   color: string,
   hoverX?: number,
+  hold?: (natural: number) => number,
 ): void {
   const frame = prepare(canvas);
   if (!frame) {
@@ -460,7 +477,8 @@ export function drawSpectrum(
     loudest = Math.max(loudest, power[k]);
   }
 
-  const ceiling = Math.ceil((toDecibels(loudest, -200) + 5) / 10) * 10;
+  const natural = Math.ceil((toDecibels(loudest, -200) + 5) / 10) * 10;
+  const ceiling = hold ? hold(natural) : natural;
   const y = { start: ceiling - 110, end: ceiling };
   drawAxes(
     frame,
@@ -580,114 +598,111 @@ function inferno(t: number): readonly [number, number, number] {
   ];
 }
 
-/** Dynamic range shown on a waterfall, below its loudest point. */
-const WATERFALL_RANGE = 80;
-
-type Spectrogram = {
-  /** Level in dB of each row (time) and column (frequency). */
-  readonly levels: Float32Array;
-  readonly rows: number;
-  readonly loudest: number;
-  /** Sample at which each row's FFT starts, and the FFT size. */
-  readonly rowStart: (row: number) => number;
-  readonly size: number;
-};
-
-const spectrograms = new WeakMap<Float32Array, Map<string, Spectrogram>>();
+/**
+ * The narrowest and widest range of levels a waterfall spreads its colors
+ * over, in dB.
+ */
+const WATERFALL_RANGE = { least: 20, most: 100 } as const;
 
 /**
- * `rows` windowed FFTs spaced evenly through the signal, reduced to `columns`
- * across `view` (Hz), each column keeping the loudest bin it covers so narrow
- * lines show. Cached, since a playing waterfall redraws every frame.
+ * The levels a waterfall's colors run between: from a little above most of
+ * what is on screen, so noise and a window's leakage stay dark, to the
+ * loudest. Silence before the stream started doesn't count.
  */
-function spectrogram(
-  signal: Signal,
-  view: Range,
-  size: number,
-  rows: number,
-  columns: number,
-): Spectrogram {
-  const key = `${size} ${rows} ${columns} ${view.start} ${view.end}`;
-  let cache = spectrograms.get(signal.data);
-  const cached = cache?.get(key);
-  if (cached) {
-    return cached;
-  }
+function colorRange(lines: readonly (Float32Array | null)[]): {
+  readonly low: number;
+  readonly high: number;
+} {
+  const levels: number[] = [];
+  let high = -Infinity;
+  for (const row of lines) {
+    for (let column = 0; row && column < row.length; column++) {
+      const db = row[column];
+      high = Math.max(high, db);
 
-  const { data, rate } = signal;
-  const binWidth = rate / size;
-  const window = new Float64Array(size);
-  let windowSum = 0;
-  for (let i = 0; i < size; i++) {
-    window[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / size);
-    windowSum += window[i];
-  }
-
-  const re = new Float64Array(size);
-  const im = new Float64Array(size);
-  const levels = new Float32Array(rows * columns);
-  const scale = 2 / (windowSum * windowSum);
-  const binAt = (column: number) =>
-    (view.start + ((view.end - view.start) * column) / columns) / binWidth;
-  const rowStart = (row: number) =>
-    rows > 1
-      ? Math.round((row * Math.max(0, data.length - size)) / (rows - 1))
-      : 0;
-  let loudest = -Infinity;
-  for (let row = 0; row < rows; row++) {
-    const start = rowStart(row);
-    for (let i = 0; i < size; i++) {
-      re[i] = start + i < data.length ? data[start + i] * window[i] : 0;
-      im[i] = 0;
-    }
-
-    fft(re, im);
-
-    for (let column = 0; column < columns; column++) {
-      const k0 = Math.max(0, Math.round(binAt(column)));
-      const k1 = Math.min(
-        size / 2,
-        Math.max(k0, Math.round(binAt(column + 1)) - 1),
-      );
-      let best = 0;
-      for (let k = k0; k <= k1; k++) {
-        best = Math.max(best, (re[k] * re[k] + im[k] * im[k]) * scale);
+      if (db > -250 && column % 3 === 0) {
+        levels.push(db);
       }
-
-      const db = toDecibels(best, -300);
-      levels[row * columns + column] = db;
-      loudest = Math.max(loudest, db);
     }
   }
 
-  const result = { levels, rows, loudest, rowStart, size };
-  if (!cache || cache.size > 4) {
-    spectrograms.set(signal.data, (cache = new Map()));
+  if (!levels.length) {
+    return { low: high - WATERFALL_RANGE.least, high };
   }
 
-  cache.set(key, result);
-  return result;
+  levels.sort((a, b) => a - b);
+  const floor = levels[Math.floor(levels.length * 0.3)];
+  const low = Math.min(
+    high - WATERFALL_RANGE.least,
+    Math.max(high - WATERFALL_RANGE.most, floor),
+  );
+  return { low, high };
 }
 
-export type WaterfallOptions = {
-  /** The stretch of time to show, in seconds; all of it by default. */
-  readonly window?: Range;
-  /** The playhead's time. */
-  readonly cursor?: number;
-};
+/** Rows of one waterfall, by row number in the stream, for one set of settings. */
+type Rows = Map<number, Float32Array | null>;
+
+const waterfalls = new WeakMap<Trace, Map<string, Rows>>();
 
 /**
- * A waterfall: the spectrum over `view` (Hz) across, time running down, level
- * as color.
+ * Level in dB of each of `columns` across `view` (Hz), from the windowed FFT
+ * of `data`, each column keeping the loudest bin it covers so narrow lines
+ * show.
+ */
+function spectrumRow(
+  data: Float32Array,
+  rate: number,
+  view: Range,
+  columns: number,
+): Float32Array {
+  const size = data.length;
+  const re = new Float64Array(size);
+  const im = new Float64Array(size);
+  let windowSum = 0;
+  for (let i = 0; i < size; i++) {
+    const w = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / size);
+    re[i] = data[i] * w;
+    windowSum += w;
+  }
+
+  fft(re, im);
+  const scale = 2 / (windowSum * windowSum);
+  const binWidth = rate / size;
+  const binAt = (column: number) =>
+    (view.start + ((view.end - view.start) * column) / columns) / binWidth;
+  const levels = new Float32Array(columns);
+  for (let column = 0; column < columns; column++) {
+    const k0 = Math.max(0, Math.round(binAt(column)));
+    const k1 = Math.min(
+      size / 2,
+      Math.max(k0, Math.round(binAt(column + 1)) - 1),
+    );
+    let best = 0;
+    for (let k = k0; k <= k1; k++) {
+      best = Math.max(best, (re[k] * re[k] + im[k] * im[k]) * scale);
+    }
+
+    levels[column] = toDecibels(best, -300);
+  }
+
+  return levels;
+}
+
+/**
+ * A waterfall of the stream in `trace`: the spectrum over `view` (Hz) across
+ * and level as color, over the time `shown` (seconds), which ends at the
+ * playhead. The newest line is at the top and older ones slide down, as on a
+ * receiver. Each line is the spectrum of the stretch just before its time, so
+ * a line appears only once its time has passed.
  */
 export function drawWaterfall(
   canvas: HTMLCanvasElement,
   theme: Theme,
-  signal: Signal,
+  trace: Trace,
   view: Range,
+  shown: Range,
   hoverX?: number,
   hoverY?: number,
-  { window, cursor }: WaterfallOptions = {},
 ): void {
   const frame = prepare(canvas);
   if (!frame) {
@@ -695,53 +710,80 @@ export function drawWaterfall(
   }
 
   const { ctx, left, top, plotWidth, plotHeight } = frame;
-  const { data, rate } = signal;
-  const duration = data.length / rate;
-  const shown = window ?? { start: 0, end: duration };
+  const { rate } = trace;
   const span = Math.max(1e-6, shown.end - shown.start);
-  const size = Math.min(
-    spectrumSize(signal, view, plotWidth),
-    floorPowerOfTwo(Math.max(256, data.length)),
-  );
   const rows = Math.max(1, Math.floor(plotHeight));
   const columns = Math.max(1, Math.floor(plotWidth));
-  // A window shows a slice of a taller spectrogram of the whole signal.
-  const total = window
-    ? Math.min(8000, Math.ceil((rows * duration) / span))
-    : rows;
-  const grid = spectrogram(signal, view, size, total, columns);
-  const spacing =
-    grid.rows > 1 ? Math.max(0, data.length - size) / (grid.rows - 1) : 1;
-  const rowAt = (row: number) => {
-    if (!window) {
-      return row;
+  const hop = span / rows;
+  // Fine enough in frequency for the zoom, short enough to follow changes from line to line.
+  const size = Math.min(
+    2 **
+      Math.ceil(
+        Math.log2(
+          rate / Math.max(1e-9, (2 * (view.end - view.start)) / columns),
+        ),
+      ),
+    floorPowerOfTwo(Math.max(256, rate * Math.max(4 * hop, 0.2))),
+    1 << 16,
+  );
+  const key = `${size} ${columns} ${view.start} ${view.end} ${hop}`;
+  let byKey = waterfalls.get(trace);
+  if (!byKey) {
+    waterfalls.set(trace, (byKey = new Map()));
+  }
+
+  let cache = byKey.get(key);
+  if (!cache) {
+    byKey.clear();
+    byKey.set(key, (cache = new Map()));
+  }
+
+  // Line k covers [k hop, (k + 1) hop); the top one is the latest that has ended.
+  const newest = Math.floor(shown.end / hop + 1e-9) - 1;
+  const line = (k: number): Float32Array | null => {
+    if (k < 0) {
+      return null;
     }
 
-    const t = shown.start + ((row + 0.5) / rows) * span;
-    const r = Math.round((t * rate - size / 2) / spacing);
-    return r >= 0 && r < grid.rows && t >= 0 && t <= duration ? r : -1;
+    let levels = cache.get(k);
+    if (levels === undefined) {
+      const end = Math.round((k + 1) * hop * rate);
+      if (end > trace.end) {
+        return null;
+      }
+
+      levels =
+        end <= trace.start
+          ? null
+          : spectrumRow(trace.read(end - size, end), rate, view, columns);
+      cache.set(k, levels);
+    }
+
+    return levels;
   };
 
+  for (const k of cache.keys()) {
+    if (k < newest - rows - 8 || k > newest + 8) {
+      cache.delete(k);
+    }
+  }
+
+  const lines = Array.from({ length: rows }, (_, row) => line(newest - row));
+  const { low, high } = colorRange(lines);
+
   const image = new ImageData(columns, rows);
-  for (let row = 0; row < rows; row++) {
-    const source = rowAt(row);
+  lines.forEach((levels, row) => {
     for (let column = 0; column < columns; column++) {
       const i = row * columns + column;
-      const [r, g, b] =
-        source < 0
-          ? [0, 0, 4]
-          : inferno(
-              (grid.levels[source * columns + column] -
-                grid.loudest +
-                WATERFALL_RANGE) /
-                WATERFALL_RANGE,
-            );
+      const [r, g, b] = levels
+        ? inferno((levels[column] - low) / (high - low))
+        : [0, 0, 4];
       image.data[4 * i] = r;
       image.data[4 * i + 1] = g;
       image.data[4 * i + 2] = b;
       image.data[4 * i + 3] = 255;
     }
-  }
+  });
 
   const offscreen = document.createElement('canvas');
   offscreen.width = columns;
@@ -750,24 +792,16 @@ export function drawWaterfall(
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(offscreen, left, top, plotWidth, plotHeight);
 
+  // Time counts back from now, so the labels stay put as the lines slide down.
   drawAxes(
     frame,
     theme,
     view,
-    shown,
+    { start: shown.start - shown.end, end: 0 },
     (v) => si(v, 'Hz'),
     (v) => si(v, 's'),
-    true,
+    { start: -shown.end, end: 0 },
   );
-
-  if (cursor !== undefined) {
-    drawCursor(
-      frame,
-      theme,
-      'y',
-      top + ((cursor - shown.start) / span) * plotHeight,
-    );
-  }
 
   if (
     hoverX !== undefined &&
@@ -779,14 +813,14 @@ export function drawWaterfall(
   ) {
     const column = Math.floor(((hoverX - left) / plotWidth) * columns);
     const row = Math.floor(((hoverY - top) / plotHeight) * rows);
-    const source = rowAt(row);
+    const levels = lines[row];
     const frequency =
       view.start + ((column + 0.5) / columns) * (view.end - view.start);
-    const time = shown.start + ((row + 0.5) / rows) * span;
+    const time = (newest - row + 1) * hop;
     drawReadout(
       frame,
       theme,
-      `${si(frequency, 'Hz', 4)}   ${si(time, 's', 3)}${source < 0 ? '' : `   ${decibels(grid.levels[source * columns + column]!, 3)}`}`,
+      `${si(frequency, 'Hz', 4)}   ${si(time, 's', 3)}${levels ? `   ${decibels(levels[column]!, 3)}` : ''}`,
       hoverX,
     );
   }

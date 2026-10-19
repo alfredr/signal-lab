@@ -189,6 +189,20 @@ export type ParameterListEvents = {
   edit(name: string, next: Parameter): string | undefined;
   remove(name: string): void;
   panel(name: string): PanelHook;
+  /**
+   * Inside a subsystem, a binding on the subsystem block outside that sets
+   * this parameter, overriding its own value.
+   */
+  outside?(name: string): OutsideBinding | undefined;
+  /** Shows the subsystem block outside, where its bindings are edited. */
+  showOutside?(): void;
+};
+
+/** A binding outside that sets a parameter, and what it works out to. */
+type OutsideBinding = {
+  readonly expression: string;
+  readonly value: number | undefined;
+  readonly error: string | undefined;
 };
 
 const UNITS: readonly (Unit | '')[] = ['', 'Hz', 's', 'dB', 'deg', 'V', 'x'];
@@ -321,7 +335,10 @@ export function parameterList(events: ParameterListEvents): {
   );
 
   let shape = '';
-  let controls: { name: string; update(value: number): void }[] = [];
+  let controls: {
+    name: string;
+    update(value: number, outside: OutsideBinding | undefined): void;
+  }[] = [];
   let editing: string | undefined;
 
   const build = (parameters: readonly Parameter[]) => {
@@ -334,10 +351,24 @@ export function parameterList(events: ParameterListEvents): {
           (value, mode) =>
             events.setValue(parameter.name, value as number, mode),
         );
-        controls.push({
-          name: parameter.name,
-          update: (value) => control.update(value),
-        });
+        const expression = html('code', { class: 'expression' });
+        const result = html('span', { class: 'expression-result' });
+        const bound = html(
+          'div',
+          { class: 'outside-binding', hidden: true },
+          html(
+            'div',
+            { class: 'expression-row' },
+            html('span', { class: 'expression-sign' }, '='),
+            expression,
+            result,
+          ),
+          html(
+            'p',
+            { class: 'control-help' },
+            'Bound outside, on this subsystem, so its own value here is not used.',
+          ),
+        );
         const more = html(
           'button',
           {
@@ -352,8 +383,25 @@ export function parameterList(events: ParameterListEvents): {
           'div',
           { class: 'bindable parameter' },
           control.element,
+          bound,
           more,
         );
+        controls.push({
+          name: parameter.name,
+          update: (value, outside) => {
+            row.classList.toggle('bound', outside !== undefined);
+            bound.hidden = outside === undefined;
+            expression.textContent = outside?.expression ?? '';
+            result.textContent =
+              outside?.error ??
+              (outside?.value === undefined
+                ? ''
+                : formatParam(outside.value, parameterSpec(parameter)));
+            result.classList.toggle('error', outside?.error !== undefined);
+            control.update(outside?.value ?? value);
+          },
+        });
+
         if (editing === parameter.name) {
           row.append(
             editForm(
@@ -389,6 +437,14 @@ export function parameterList(events: ParameterListEvents): {
                 },
               },
               addOnce('Add a control', panel.added(), panel.add),
+              ...(events.outside?.(parameter.name) && events.showOutside
+                ? [
+                    {
+                      label: 'Show the binding outside',
+                      run: events.showOutside,
+                    },
+                  ]
+                : []),
               'separator',
               {
                 label: 'Delete',
@@ -418,7 +474,7 @@ export function parameterList(events: ParameterListEvents): {
     for (const control of controls) {
       const parameter = parameters.find((p) => p.name === control.name);
       if (parameter) {
-        control.update(parameter.value);
+        control.update(parameter.value, events.outside?.(control.name));
       }
     }
   }

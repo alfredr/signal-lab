@@ -19,6 +19,13 @@
   --accent: #1d6e8a;
   --accent-soft: #e1eef2;
   --warn: #c0392b;
+  --lcd: #b8c49c;
+  --lcd-ink: #1c2614;
+  --lcd-dots: rgba(28, 38, 20, 0.07);
+  --lcd-glow: none;
+  /* FT8's Costas sync symbols, set apart from the data around them. */
+  --sync: #8a5a1d;
+  --sync-soft: #f2eadd;
   --font-display: "Archivo", "Arial Narrow", system-ui, sans-serif;
   --font-body: "Source Serif 4", Georgia, "Times New Roman", serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -41,6 +48,12 @@
     --accent: #5cb8d8;
     --accent-soft: #16303a;
     --warn: #ff6b5b;
+    --lcd: #121b0c;
+    --lcd-ink: #a6e86c;
+    --lcd-dots: rgba(166, 232, 108, 0.06);
+    --lcd-glow: 0 0 6px rgba(166, 232, 108, 0.55);
+    --sync: #e0a95c;
+    --sync-soft: #2a2317;
   }
 }
 
@@ -59,6 +72,12 @@
   --accent: #5cb8d8;
   --accent-soft: #16303a;
   --warn: #ff6b5b;
+  --lcd: #121b0c;
+  --lcd-ink: #a6e86c;
+  --lcd-dots: rgba(166, 232, 108, 0.06);
+  --lcd-glow: 0 0 6px rgba(166, 232, 108, 0.55);
+  --sync: #e0a95c;
+  --sync-soft: #2a2317;
 }
 
 * { box-sizing: border-box; }
@@ -185,6 +204,19 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .hit { fill: transparent; }
 .shape-terminal .body { fill: var(--accent-soft); stroke: var(--accent); }
 .shape-terminal .title { font: 600 11px var(--font-mono); }
+/* Inside a subsystem: what each terminal is wired to outside, for the copy opened. */
+.outside-lead { fill: none; stroke: var(--accent); stroke-width: 1.4; stroke-dasharray: 4 3; }
+.outside-label { font: 600 11px var(--font-mono); fill: var(--accent); dominant-baseline: middle; cursor: pointer; }
+.outside-label:hover { text-decoration: underline; }
+.outside-label.anchor-start { text-anchor: start; }
+.outside-label.anchor-end { text-anchor: end; }
+.outside-word { font-weight: 400; fill: var(--muted); }
+.outside-label.more, .outside-end.unwired .outside-label { font-weight: 400; fill: var(--muted); cursor: default; text-decoration: none; }
+.outside-end.unwired .outside-lead { stroke: var(--muted); }
+.outside-label.reach { text-anchor: middle; cursor: default; }
+.outside-label.reach:hover { text-decoration: none; }
+.outside-name { cursor: pointer; }
+.outside-name:hover { text-decoration: underline; }
 .body.stack { opacity: 0.6; }
 .marquee { fill: var(--accent); fill-opacity: 0.08; stroke: var(--accent); stroke-dasharray: 4 3; }
 
@@ -221,6 +253,10 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .expression-result.error { color: var(--warn); white-space: normal; grid-column: 1 / -1; }
 .parameters, .settings { display: grid; gap: 10px; }
 .parameter-list { display: grid; gap: 14px; }
+/* A subsystem's parameter bound on the subsystem block outside: the binding, read-only. */
+.outside-binding { margin-top: 8px; }
+.outside-binding code.expression { padding: 4px 7px; font: 500 12px var(--font-mono); color: var(--ink); background: var(--bg); border: 1px dashed var(--rule); border-radius: 6px; overflow-wrap: anywhere; }
+.outside-binding .control-help { margin: 4px 0 0; }
 .parameter-form { display: grid; gap: 8px; margin-top: 8px; padding: 10px; border: 1px solid var(--rule); border-radius: 8px; background: var(--bg); }
 .mini-field { display: grid; gap: 4px; font: 500 11px var(--font-mono); color: var(--muted); }
 .mini-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: end; }
@@ -288,6 +324,23 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .segment input:checked + span { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--rule); }
 .segment input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+/* An FT8 message's fields, each worked out, its bits lit as they go out. */
+.packing { display: grid; gap: 6px; }
+.packing .control-help { margin: 0; }
+.pack-fields { display: grid; gap: 8px; }
+.pack-field { display: grid; gap: 6px; padding: 8px 10px; background: var(--bg); border: 1px solid var(--rule); border-radius: 8px; }
+.pack-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: baseline; font: 600 12px var(--font-mono); }
+.pack-name { color: var(--muted); font-weight: 500; }
+.pack-value { color: var(--accent); }
+.pack-places { border-collapse: collapse; font: 500 12px var(--font-mono); }
+.pack-places th { padding: 1px 8px 1px 0; color: var(--muted); font-weight: 400; text-align: left; }
+.pack-places td { min-width: 2.1em; padding: 1px 2px; color: var(--muted); text-align: center; }
+.pack-places tr:first-child td { color: var(--ink); font-weight: 700; }
+.pack-how { margin: 0; font: 500 11px var(--font-mono); color: var(--muted); overflow-wrap: anywhere; }
+.pack-bits { margin: 0; font: 600 12px var(--font-mono); color: var(--ink); overflow-wrap: anywhere; }
+.pack-bits .sent { color: var(--accent); }
+.pack-bits .now { color: var(--surface); background: var(--accent); border-radius: 2px; }
+.pack-error { margin: 0; color: var(--warn); }
 .readings { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 12px; margin: 0; font: 500 12px var(--font-mono); }
 .readings:empty { display: none; }
 .readings dt { color: var(--muted); }
@@ -364,7 +417,9 @@ math { font-size: 1.05em; }
 .widget-plot { display: flex; flex-direction: column; gap: 2px; }
 .widget-plot .plot-wrap, .face-body .plot-wrap { position: relative; flex: 1; min-height: 40px; }
 .widget-plot .plot, .face-body .plot { position: absolute; inset: 0; width: 100%; height: 100%; }
-.widget-plot .panel-empty { padding: 12px 4px; font-size: 11px; }
+/* What a small screen says while it has nothing to plot, centered in its space. */
+.widget-plot .panel-empty, .face-body .panel-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 6px 10px; overflow: hidden; }
+.widget-plot .panel-empty { font-size: 11px; }
 .widget-plot .plot { cursor: inherit; }
 
 .widget-value { font: 600 24px/1.15 var(--font-mono); overflow-wrap: anywhere; }
@@ -402,13 +457,14 @@ input.knob-value { width: 100%; max-width: 116px; padding: 3px 6px; text-align: 
   .widget-speaker.playing .speaker-grille { animation: none; }
 }
 
-/* The panel face, with the playhead's transport. */
+/* The panel face, with the stream's transport. */
 
 .face-head { position: sticky; top: -10px; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: -10px -12px 10px; padding: 8px 12px; background: var(--bg); border-bottom: 1px solid var(--rule); }
 .face-title { margin: 0; font: 800 16px/1 var(--font-display); font-stretch: 112%; }
 .transport { display: flex; flex: 1; align-items: center; gap: 6px; min-width: 260px; }
-.transport input[type="range"] { flex: 1; min-width: 80px; max-width: 420px; }
-.transport-time { min-width: 5.5em; font: 600 12px var(--font-mono); }
+.transport-time { min-width: 6.5em; font: 600 12px var(--font-mono); font-variant-numeric: tabular-nums; }
+/* Running slower than asked, because the simulation can't keep up. */
+.transport-time.behind { color: var(--warn); }
 .transport select { width: auto; padding: 3px 6px; }
 .run { min-width: 7.5em; }
 .face-grid { position: relative; display: grid; grid-template-columns: repeat(auto-fill, 32px); grid-auto-columns: 32px; grid-auto-rows: 32px; gap: 8px; }
@@ -420,10 +476,63 @@ input.knob-value { width: 100%; max-width: 116px; padding: 3px 6px; text-align: 
 .face-item.scope .face-body { border-style: dashed; }
 .face-body .signal-panel { display: flex; flex-direction: column; padding: 0; background: none; border: 0; }
 .face-body .signal-head { flex-wrap: wrap; row-gap: 4px; }
-.face-body .signal-name { flex: 1 1 100%; }
+/* The name and Listen share the top line; the view buttons take the next. */
+.face-body .signal-name { flex: 1 1 0; }
+.face-body .signal-head .segmented-buttons { order: 1; flex: 1 0 100%; }
 .face-body .swatch { display: none; }
 .face-body .knob { width: 50px; height: 50px; }
 .face-body .widget-readout { gap: 1px; }
+
+/* A faux LCD, for readouts and for typing into: a recessed panel with a faint
+   dot-matrix grid behind segment-colored mono text. */
+.lcd {
+  display: block; width: 100%; min-width: 0; padding: 5px 9px;
+  background-color: var(--lcd);
+  background-image: linear-gradient(var(--lcd-dots) 1px, transparent 1px), linear-gradient(90deg, var(--lcd-dots) 1px, transparent 1px);
+  background-size: 3px 3px;
+  color: var(--lcd-ink); text-shadow: var(--lcd-glow);
+  font: 600 18px/1.25 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase;
+  white-space: pre; overflow: hidden; text-overflow: ellipsis;
+  border: 1px solid color-mix(in srgb, var(--lcd-ink) 25%, transparent); border-radius: 4px;
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.35);
+}
+input[type="text"].lcd {
+  cursor: text; color: var(--lcd-ink); text-shadow: var(--lcd-glow);
+  background-color: var(--lcd);
+  background-image: linear-gradient(var(--lcd-dots) 1px, transparent 1px), linear-gradient(90deg, var(--lcd-dots) 1px, transparent 1px);
+  background-size: 3px 3px;
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.35);
+  border: 1px solid color-mix(in srgb, var(--lcd-ink) 25%, transparent); border-radius: 4px;
+  font: 600 18px/1.25 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase;
+}
+input.lcd:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* On the face an LCD is the same height whether it shows or takes text, and
+   sits the same distance under its label, so a row of them lines up. */
+.face-body .widget-value.lcd, .face-body input[type="text"].lcd { height: 34px; padding: 0 9px; font-size: 16px; line-height: 32px; letter-spacing: 0.04em; }
+.face-body .widget-readout:has(> .lcd) { gap: 4px; }
+.instrument-face .lcd { font-size: 12px; padding: 3px 6px; }
+.lcd-control { display: grid; gap: 4px; min-width: 0; }
+
+/* A push button: round, raised, and lit for a moment when pressed. */
+.widget-button { display: grid; place-items: center; height: 100%; }
+button.push {
+  min-width: 64px; min-height: 40px; padding: 8px 16px; border-radius: 999px;
+  font: 700 12px/1.1 var(--font-display); letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--ink); background: linear-gradient(var(--surface), var(--bg));
+  border: 1px solid var(--rule); box-shadow: 0 2px 0 var(--rule), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+button.push:active, button.push.pressed {
+  transform: translateY(1px); box-shadow: 0 1px 0 var(--rule), 0 0 10px var(--accent);
+  border-color: var(--accent); color: var(--accent);
+}
+.instrument-face button.push { min-width: 48px; min-height: 28px; padding: 4px 10px; font-size: 10px; }
+
+/* A Recording's sound in the inspector. */
+.clip-picker { display: grid; gap: 6px; }
+.clip-name { font: 400 12px/1.3 var(--font-mono); color: var(--muted); }
+.clip-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+.clip-status { font: 400 11px/1.3 var(--font-mono); color: var(--muted); }
+.clip-status:empty { display: none; }
 .face-body .widget-value { font-size: 20px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .instrument-face .segment span { padding: 3px 5px; font-size: 11px; }
 .face-body .knob-control { gap: 2px; }

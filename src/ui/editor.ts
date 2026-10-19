@@ -5,8 +5,9 @@
 // stay in place across redraws so a knob keeps turning while the diagram changes under it.
 
 import { isInstrument } from '../blocks/instruments.ts';
+import { INPUT_TERMINAL } from '../blocks/terminals.ts';
 import type { BlockType, Reading } from '../engine/block.ts';
-import { readingAt, visiblePorts } from '../engine/block.ts';
+import { visiblePorts } from '../engine/block.ts';
 import type { PortRef } from '../engine/circuit.ts';
 import { formatReading } from '../engine/format.ts';
 import { resolveParams } from '../engine/params.ts';
@@ -25,8 +26,17 @@ import {
   type LabDocument,
   type Path,
 } from '../model/document.ts';
-import { instrumentLeads } from '../model/instruments.ts';
-import { typeOf } from '../model/subsystems.ts';
+import {
+  instrumentLeads,
+  reachingIn,
+  type Reach,
+} from '../model/instruments.ts';
+import {
+  isTerminal,
+  typeOf,
+  wiredOutside,
+  type Outside,
+} from '../model/subsystems.ts';
 import { svg } from './dom.ts';
 import {
   layoutOf,
@@ -64,8 +74,6 @@ export type EditorModel = {
   readonly status: ReadonlyMap<string, BlockStatus>;
   /** Draws the instruments. */
   readonly widgets: Widgets;
-  /** The playhead's time, if it is out. */
-  readonly time: number | undefined;
   /** What measuring blocks found, by full id. */
   readonly readings: ReadonlyMap<string, readonly Reading[]>;
   /** Settings worked out from bindings, by full block id. */
@@ -88,6 +96,8 @@ export type EditorEvents = {
   select(selection: Selection): void;
   /** Open a subsystem to edit what is inside. */
   open(id: string): void;
+  /** Show a block, by full id, in its own diagram. */
+  reveal(id: string): void;
   /** Add a palette entry dropped on the canvas, centered on `at`. */
   add(key: string, at: Point): void;
   /**
@@ -174,24 +184,30 @@ const classes = (...names: (string | false | undefined)[]) =>
   names.filter(Boolean).join(' ');
 
 /**
- * The values of a block's changing readings at time `t`, joined: what the
- * block is doing at the playhead.
+ * What a block's readings say, in a line: the ones its type picks for a
+ * glance, or else the first.
  */
-function trackSummary(
+function readingSummary(
   readings: readonly Reading[],
-  t: number | undefined,
+  glance: BlockType['glance'],
 ): string | undefined {
-  const tracks = readings.filter((reading) => reading.track);
-  if (t === undefined || !tracks.length) {
+  const picked = glance
+    ? glance.labels.flatMap((label) =>
+        readings.filter((reading) => reading.label === label),
+      )
+    : [];
+  if (picked.length && glance?.together) {
+    return picked.map((reading) => formatReading(reading)).join(' · ');
+  }
+
+  const [first] = picked.length ? picked : readings;
+  if (!first) {
     return undefined;
   }
 
-  return tracks
-    .map((reading) => {
-      const value = readingAt(reading, t);
-      return value === undefined ? '–' : formatReading({ ...reading, value });
-    })
-    .join(' · ');
+  return typeof first.value === 'string'
+    ? formatReading(first)
+    : `${first.label} ${formatReading(first)}`;
 }
 
 /** An instrument's place on the diagram, kept between redraws. */
@@ -209,14 +225,23 @@ export class DiagramEditor {
   readonly #leads: SVGGElement;
   readonly #wires: SVGGElement;
   readonly #blocks: SVGGElement;
+  /** Inside a subsystem, what its terminals are wired to outside. */
+  readonly #outside: SVGGElement;
   readonly #instruments: SVGGElement;
   readonly #overlay: SVGGElement;
   /** Instrument nodes by full id. */
   readonly #nodes = new Map<string, InstrumentNode>();
-  /** Summaries that follow the playhead, by full block id. */
-  readonly #tracked = new Map<
+  /**
+   * Summaries of blocks that report readings, by full block id, with what each
+   * says without any.
+   */
+  readonly #reporting = new Map<
     string,
-    { readonly text: SVGTextElement; readonly readings: readonly Reading[] }
+    {
+      readonly text: SVGTextElement;
+      readonly settings: string;
+      readonly glance: BlockType['glance'];
+    }
   >();
   #model: EditorModel | undefined;
   #view: View = { x: -40, y: -40, scale: 1 };
@@ -239,6 +264,7 @@ export class DiagramEditor {
     this.#leads = svg('g', { class: 'leads' });
     this.#wires = svg('g', { class: 'wires' });
     this.#blocks = svg('g', { class: 'blocks' });
+    this.#outside = svg('g', { class: 'outside' });
     this.#instruments = svg('g', { class: 'instruments' });
     this.#overlay = svg('g', { class: 'overlay' });
     this.element = svg(
@@ -280,6 +306,7 @@ export class DiagramEditor {
       this.#leads,
       this.#wires,
       this.#blocks,
+      this.#outside,
       this.#instruments,
       this.#overlay,
     );
@@ -369,7 +396,7 @@ export class DiagramEditor {
     const { inputs, outputs } = terminals(diagram);
     inputs.forEach((t, i) => terminalNumbers.set(t.id, `in ${i + 1}`));
     outputs.forEach((t, i) => terminalNumbers.set(t.id, `out ${i + 1}`));
-    this.#tracked.clear();
+    this.#reporting.clear();
     this.#blocks.replaceChildren(
       ...diagram.blocks
         .filter((block) => !isInstrument(block.kind))
@@ -377,15 +404,31 @@ export class DiagramEditor {
           this.#drawBlock(block, model, terminalNumbers.get(block.id)),
         ),
     );
+    this.#outside.replaceChildren(
+      ...(path.length
+        ? diagram.blocks
+            .filter(isTerminal)
+            .map((block) =>
+              this.#drawOutside(block, wiredOutside(model.doc, path, block)),
+            )
+        : []),
+      ...[
+        ...Map.groupBy(reachingIn(model.doc, path), (reach) => reach.block),
+      ].flatMap(([id, reaches]) => {
+        const block = blocks.get(id);
+        return block ? [this.#drawReaches(block, reaches)] : [];
+      }),
+    );
     this.#drawInstruments(model);
     this.#drawOverlay();
   }
 
-  /** Moves the playhead: block summaries that follow it catch up. */
-  setTime(time: number | undefined): void {
-    for (const { text, readings } of this.#tracked.values()) {
-      const summary = trackSummary(readings, time);
-      if (summary !== undefined) {
+  /** Shows the readings at the playhead on the blocks that report them. */
+  setReadings(readings: ReadonlyMap<string, readonly Reading[]>): void {
+    for (const [id, { text, settings, glance }] of this.#reporting) {
+      const summary =
+        readingSummary(readings.get(id) ?? [], glance) ?? settings;
+      if (text.textContent !== summary) {
         text.textContent = summary;
       }
     }
@@ -437,7 +480,7 @@ export class DiagramEditor {
         node.face.replaceChildren(widget);
       }
 
-      node.ports.replaceChildren(...this.#inputPorts(block, layout));
+      node.ports.replaceChildren(...this.#instrumentPorts(block, layout));
 
       const from = center(block);
       for (const target of instrumentLeads(diagram, block)) {
@@ -487,38 +530,51 @@ export class DiagramEditor {
   }
 
   /** Input ports drawn on a block, with their hit areas and names. */
-  #inputPorts(block: LabBlock, layout: BlockLayout): SVGElement[] {
+  /** An instrument's ports: inputs for what it shows, an output for a Button. */
+  #instrumentPorts(block: LabBlock, layout: BlockLayout): SVGElement[] {
     const type = typeOf(block);
-    return (type?.inputs ?? []).flatMap((port, i) => {
-      const p = layout.inputs[i];
-      if (!p) {
-        return [];
-      }
-
+    const port = (
+      side: 'in' | 'out',
+      i: number,
+      name: string,
+      at: { readonly x: number; readonly y: number },
+    ) => {
       const target =
+        side === 'in' &&
         this.#drag?.kind === 'wire' &&
         this.#drag.target &&
         sameRef(this.#drag.target, { block: block.id, port: i });
       return [
         svg('circle', {
-          class: classes('port', 'in', target && 'target'),
-          cx: p.x,
-          cy: p.y,
+          class: classes('port', side, target && 'target'),
+          cx: at.x,
+          cy: at.y,
           r: 4.5,
         }),
         svg(
           'circle',
           {
             class: 'port-hit',
-            cx: p.x,
-            cy: p.y,
+            cx: at.x,
+            cy: at.y,
             r: 11,
-            'data-port': `in:${i}`,
+            'data-port': `${side}:${i}`,
           },
-          svg('title', {}, `input ${port.name}`),
+          svg('title', {}, `${side === 'in' ? 'input' : 'output'} ${name}`),
         ),
       ];
-    });
+    };
+
+    return [
+      ...(type?.inputs ?? []).flatMap((spec, i) => {
+        const at = layout.inputs[i];
+        return at ? port('in', i, spec.name, at) : [];
+      }),
+      ...(type?.outputs ?? []).flatMap((spec, i) => {
+        const at = layout.outputs[i];
+        return at ? port('out', i, spec.name, at) : [];
+      }),
+    ];
   }
 
   /** Zooms and pans so the whole diagram fits. */
@@ -546,6 +602,14 @@ export class DiagramEditor {
         bottom = Math.max(bottom, block.y + layout.height + 32);
       }
 
+      if (this.#outside.childElementCount) {
+        const box = this.#outside.getBBox();
+        left = Math.min(left, box.x);
+        top = Math.min(top, box.y);
+        right = Math.max(right, box.x + box.width);
+        bottom = Math.max(bottom, box.y + box.height);
+      }
+
       const margin = 56;
       const scale = Math.min(
         width / (right - left + 2 * margin),
@@ -569,6 +633,114 @@ export class DiagramEditor {
       x: this.#view.x + width / this.#view.scale / 2,
       y: this.#view.y + height / this.#view.scale / 2,
     };
+  }
+
+  /**
+   * A dashed lead off a terminal's outer side, to or from what it is wired to
+   * outside, each named and a click away.
+   */
+  #drawOutside(block: LabBlock, ends: readonly Outside[]): SVGGElement {
+    const { width, height } = layoutFor(block);
+    const input = block.kind === INPUT_TERMINAL;
+    const y = block.y + height / 2;
+    const edge = input ? block.x - 4 : block.x + width + 4;
+    const far = input ? edge - 28 : edge + 28;
+    const x = input ? far - 6 : far + 6;
+    const anchor = input ? 'anchor-end' : 'anchor-start';
+    const shown = ends.length > 3 ? ends.slice(0, 2) : ends;
+    const line = (i: number, count: number) =>
+      y + 1 + (i - (count - 1) / 2) * 15;
+    const count = shown.length + (shown.length < ends.length ? 1 : 0);
+    return svg(
+      'g',
+      { class: classes('outside-end', !ends.length && 'unwired') },
+      svg('path', {
+        class: 'outside-lead',
+        d: input ? `M${far},${y} H${edge}` : `M${edge},${y} H${far}`,
+        'marker-end': 'url(#arrow)',
+      }),
+      ...(ends.length
+        ? shown.map((end, i) =>
+            svg(
+              'text',
+              {
+                class: `outside-label ${anchor}`,
+                x,
+                y: line(i, count),
+                'data-outside': end.id,
+              },
+              svg('tspan', { class: 'outside-word' }, input ? 'from ' : 'to '),
+              end.label,
+              svg(
+                'title',
+                {},
+                `${input ? 'From' : 'To'} ${end.label}, outside this subsystem. Click to go there.`,
+              ),
+            ),
+          )
+        : [
+            svg(
+              'text',
+              { class: `outside-label ${anchor}`, x, y: y + 1 },
+              'not wired outside',
+            ),
+          ]),
+      shown.length < ends.length
+        ? svg(
+            'text',
+            {
+              class: `outside-label more ${anchor}`,
+              x,
+              y: line(shown.length, count),
+            },
+            `and ${ends.length - shown.length} more`,
+          )
+        : null,
+    );
+  }
+
+  /**
+   * A dotted lead up from a block to the instruments outside that set or read
+   * it, each named and a click away.
+   */
+  #drawReaches(block: LabBlock, reaches: readonly Reach[]): SVGGElement {
+    const { width } = layoutFor(block);
+    const shape = typeOf(block)?.shape?.kind;
+    // Clear of a name drawn above the block.
+    const named = block.name && (shape === 'circle' || shape === 'triangle');
+    const x = block.x + width / 2;
+    const top = block.y - (named ? 22 : 4);
+    const lines = [
+      ['set by ', reaches.filter((r) => r.sets)],
+      ['read by ', reaches.filter((r) => !r.sets)],
+    ] as const;
+    return svg(
+      'g',
+      { class: 'reaches' },
+      svg('path', { class: 'lead', d: `M${x},${top} V${top - 14}` }),
+      ...lines
+        .filter(([, list]) => list.length)
+        .map(([word, list], i) =>
+          svg(
+            'text',
+            { class: 'outside-label reach', x, y: top - 23 - 15 * i },
+            svg('tspan', { class: 'outside-word' }, word),
+            ...list.flatMap((reach, k) => [
+              k ? ', ' : '',
+              svg(
+                'tspan',
+                { class: 'outside-name', 'data-outside': reach.id },
+                reach.label,
+              ),
+            ]),
+            svg(
+              'title',
+              {},
+              `${list.map((r) => r.label).join(', ')}, on the panel outside this subsystem. Click a name to go to it.`,
+            ),
+          ),
+        ),
+    );
   }
 
   #drawBlock(
@@ -603,23 +775,20 @@ export class DiagramEditor {
     const { width: w, height: h } = layout;
     const shape = type.shape ?? { kind: 'box' };
     const subsystem = isSubsystem(block);
-    // A measuring block shows its first reading where others show settings,
-    // and what its changing readings say at the playhead while it is out.
-    const readings = model.readings.get(id) ?? [];
-    const reading = readings.find((r) => !r.track);
-    const tracked = trackSummary(readings, model.time);
-    const summary = subsystem
+    // A block that reports readings shows what they say at the playhead where
+    // others show their settings.
+    const settings = subsystem
       ? `${block.inner.blocks.length} blocks inside`
-      : tracked !== undefined
-        ? tracked
-        : reading
-          ? `${typeof reading.value === 'string' ? '' : `${reading.label} `}${formatReading(reading)}`
-          : (type.summary?.(
-              resolveParams(type.params, {
-                ...block.params,
-                ...model.bound.get(id),
-              }),
-            ) ?? '');
+      : (type.summary?.(
+          resolveParams(type.params, {
+            ...block.params,
+            ...model.bound.get(id),
+          }),
+        ) ?? '');
+    const summary =
+      (!subsystem &&
+        readingSummary(model.readings.get(id) ?? [], type.glance)) ||
+      settings;
     const group = svg('g', {
       class: classes(
         'block',
@@ -689,29 +858,46 @@ export class DiagramEditor {
         break;
 
       case 'antenna': {
-        const transmit = visiblePorts(type.inputs).length > 0;
+        // Waves going out on the right if it radiates, coming in on the left if it hears.
+        const transmit = model.diagram.wires.some(
+          (wire) => wire.to.block === block.id,
+        );
+        const receive = model.diagram.wires.some(
+          (wire) => wire.from.block === block.id,
+        );
         const foot = 56;
         group.append(
           // A hit area, since the antenna itself is just lines.
           svg('rect', { class: 'hit', x: 0, y: 0, width: w, height: h }),
           svg('path', {
             class: 'antenna',
-            d: `M${w / 2},${foot} V16 M10,2 L${w / 2},16 L${w - 10},2 M${transmit ? 0 : w / 2},${foot} H${transmit ? w / 2 : w}`,
+            d: `M${w / 2},${foot} V16 M10,2 L${w / 2},16 L${w - 10},2 M0,${foot} H${w}`,
           }),
           svg('path', {
             class: 'waves',
-            d: transmit
-              ? `M${w - 6},8 a10,10 0 0 1 0,14 M${w - 1},4 a16,16 0 0 1 0,22`
-              : `M6,8 a10,10 0 0 0 0,14 M1,4 a16,16 0 0 0 0,22`,
+            d: [
+              transmit || !receive
+                ? `M${w - 6},8 a10,10 0 0 1 0,14 M${w - 1},4 a16,16 0 0 1 0,22`
+                : '',
+              receive || !transmit
+                ? `M6,8 a10,10 0 0 0 0,14 M1,4 a16,16 0 0 0 0,22`
+                : '',
+            ].join(' '),
           }),
           svg(
             'text',
             { class: 'label', x: w / 2, y: h + 14 },
-            block.name || (transmit ? 'Transmit' : 'Receive'),
+            block.name ||
+              (transmit && !receive
+                ? 'Transmit'
+                : receive && !transmit
+                  ? 'Receive'
+                  : 'Antenna'),
           ),
         );
 
-        if (summary) {
+        // The summary is its band noise, which only matters if it hears.
+        if (summary && receive) {
           group.append(
             svg('text', { class: 'summary', x: w / 2, y: h + 28 }, summary),
           );
@@ -745,11 +931,17 @@ export class DiagramEditor {
           );
         }
 
+        // With its ports named along its sides, the summary goes below,
+        // where a long one has room.
+        const below =
+          visiblePorts(type.inputs).length > 1 ||
+          visiblePorts(type.outputs).length > 1;
+        const inside = summary && !below;
         group.append(
           svg('rect', { class: 'body', width: w, height: h, rx: 8 }),
           svg(
             'text',
-            { class: 'title', x: w / 2, y: summary ? h / 2 - 8 : h / 2 + 1 },
+            { class: 'title', x: w / 2, y: inside ? h / 2 - 8 : h / 2 + 1 },
             block.name || type.label,
           ),
         );
@@ -758,7 +950,11 @@ export class DiagramEditor {
           group.append(
             svg(
               'text',
-              { class: 'summary', x: w / 2, y: h / 2 + 11 },
+              {
+                class: 'summary',
+                x: w / 2,
+                y: below ? h + 14 : h / 2 + 11,
+              },
               summary,
             ),
           );
@@ -867,8 +1063,8 @@ export class DiagramEditor {
     }
 
     const text = group.querySelector<SVGTextElement>('text.summary');
-    if (text && readings.some((r) => r.track)) {
-      this.#tracked.set(id, { text, readings });
+    if (text && !subsystem && type.reports?.length) {
+      this.#reporting.set(id, { text, settings, glance: type.glance });
     }
 
     return group;
@@ -980,6 +1176,13 @@ export class DiagramEditor {
     const target = event.target as Element;
     if (target.closest('input, select, textarea, button, [data-live]')) {
       this.#pointers.delete(event.pointerId);
+      return;
+    }
+
+    const outside = target.closest<SVGElement>('[data-outside]');
+    if (outside) {
+      this.#pointers.delete(event.pointerId);
+      this.#events.reveal(outside.dataset.outside!);
       return;
     }
 
@@ -1286,28 +1489,65 @@ export class DiagramEditor {
   #wheel(event: WheelEvent): void {
     event.preventDefault();
     const { x, y, scale } = this.#view;
-    if (event.ctrlKey || event.metaKey) {
-      // Pinch gestures and ctrl+wheel zoom around the pointer.
+    const pinch = event.ctrlKey || event.metaKey;
+    const notches = pinch ? undefined : wheelNotches(event);
+    if ((pinch || notches !== undefined) && !event.shiftKey) {
+      // A mouse wheel zooms 15% a notch around the pointer; a pinch (or
+      // ctrl+wheel) sends small steps and zooms smoothly.
       const pointer = this.#toDiagram(event.clientX, event.clientY);
-      const next = Math.min(
-        3,
-        Math.max(0.2, scale * Math.exp(-event.deltaY * 0.01)),
-      );
+      const factor =
+        notches === undefined
+          ? Math.exp(-event.deltaY * 0.01)
+          : 1.15 ** -notches;
+      const next = Math.min(3, Math.max(0.2, scale * factor));
       this.#view = {
         x: pointer.x - ((pointer.x - x) * scale) / next,
         y: pointer.y - ((pointer.y - y) * scale) / next,
         scale: next,
       };
     } else {
+      // Two fingers on a trackpad, or shift+wheel, pans.
+      const sideways = event.shiftKey && !event.deltaX;
       this.#view = {
-        x: x + event.deltaX / scale,
-        y: y + event.deltaY / scale,
+        x: x + (sideways ? event.deltaY : event.deltaX) / scale,
+        y: y + (sideways ? 0 : event.deltaY) / scale,
         scale,
       };
     }
 
     this.#applyView();
   }
+}
+
+/**
+ * How many notches a mouse wheel turned, down being positive, or undefined if
+ * the event comes from two fingers on a trackpad. Firefox counts a wheel in
+ * lines, three a notch. Chrome and Safari also give the old wheelDeltaY: 120 a
+ * notch from a wheel, and exactly -3 deltaY from a trackpad. Failing both, a
+ * wheel moves straight up or down by whole steps of 50 pixels or more.
+ */
+function wheelNotches(event: WheelEvent): number | undefined {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    return event.deltaY / 3;
+  }
+
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    return event.deltaY;
+  }
+
+  const legacy = (event as WheelEvent & { readonly wheelDeltaY?: number })
+    .wheelDeltaY;
+  if (legacy) {
+    return legacy % 120 === 0 && legacy !== -3 * event.deltaY
+      ? -legacy / 120
+      : undefined;
+  }
+
+  return event.deltaX === 0 &&
+    Number.isInteger(event.deltaY) &&
+    Math.abs(event.deltaY) >= 50
+    ? event.deltaY / 100
+    : undefined;
 }
 
 function rectangle(

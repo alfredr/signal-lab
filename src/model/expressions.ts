@@ -212,6 +212,20 @@ export function parseExpression(text: string): Outcome<Expression> {
   }
 }
 
+/**
+ * `text` with each name in `renames` replaced, all at once, by what it maps
+ * to: another name, or an expression in parentheses. Only whole names change,
+ * never part of a longer one or of a number such as 1e5.
+ */
+export function renameIn(
+  text: string,
+  renames: ReadonlyMap<string, string>,
+): string {
+  return text.replace(/[A-Za-z_][A-Za-z0-9_]*/g, (name, at: number) =>
+    /[0-9.]$/.test(text.slice(0, at)) ? name : (renames.get(name) ?? name),
+  );
+}
+
 /** Every parameter name the expression uses. */
 export function namesIn(expression: Expression): string[] {
   switch (expression.kind) {

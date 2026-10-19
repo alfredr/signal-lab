@@ -5,6 +5,7 @@ const CH1 = ' 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const CH2 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const CH3 = '0123456789';
 const CH4 = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const FIELDS = 'ABCDEFGHIJKLMNOPQR';
 const TOKENS = 2063592;
 const HASHES = 4194304;
 const GRIDS = 32400;
@@ -33,12 +34,60 @@ export function valueOf(
   return value;
 }
 
+/**
+ * A character of a callsign or grid, and its place in the alphabet for its
+ * position.
+ */
+export type Place = {
+  readonly char: string;
+  readonly index: number;
+  /** How many characters that position's alphabet has. */
+  readonly of: number;
+};
+
+/** What a field says, and the number that packs it. */
+type Packing = {
+  readonly text: string;
+  /**
+   * A callsign's or grid's characters, the digits of its number in a mixed
+   * base: each place counts in units of all the alphabets after it.
+   */
+  readonly places?: readonly Place[];
+  /** Added to a callsign's digits: the numbers below are kept for tokens. */
+  readonly offset?: number;
+  /** How the number comes about, for a field without places. */
+  readonly how?: string;
+  readonly value: number;
+};
+
+/** One field of the 77 bits. */
+export type Field = Packing & {
+  readonly name: string;
+  readonly bits: readonly number[];
+};
+
+function places(
+  text: string,
+  alphabets: readonly string[],
+): Place[] | undefined {
+  const found = [...text].map((char, i) => ({
+    char,
+    index: alphabets[i]!.indexOf(char),
+    of: alphabets[i]!.length,
+  }));
+  return found.every((p) => p.index >= 0) ? found : undefined;
+}
+
+/** The number whose digits are `digits`, most significant first. */
+const fold = (digits: readonly Place[]) =>
+  digits.reduce((value, p) => value * p.of + p.index, 0);
+
 /** A 28-bit callsign field; the first field may also be CQ, DE or QRZ. */
-function packCall(call: string, first: boolean): number | undefined {
+function packCall(call: string, first: boolean): Packing | undefined {
   if (first) {
     const token = ['DE', 'QRZ', 'CQ'].indexOf(call);
     if (token >= 0) {
-      return token;
+      return { text: call, how: 'DE, QRZ, CQ are 0, 1, 2', value: token };
     }
   }
 
@@ -66,29 +115,13 @@ function packCall(call: string, first: boolean): number | undefined {
     return undefined;
   }
 
-  const indices = [
-    CH1.indexOf(padded[0]),
-    CH2.indexOf(padded[1]),
-    CH3.indexOf(padded[2]),
-    CH4.indexOf(padded[3]),
-    CH4.indexOf(padded[4]),
-    CH4.indexOf(padded[5]),
-  ];
-  if (indices.some((i) => i < 0)) {
+  const digits = places(padded, [CH1, CH2, CH3, CH4, CH4, CH4]);
+  if (!digits) {
     return undefined;
   }
 
-  const [a, b, c, d, e, f] = indices as [
-    number,
-    number,
-    number,
-    number,
-    number,
-    number,
-  ];
-  return (
-    TOKENS + HASHES + ((((a * 36 + b) * 10 + c) * 27 + d) * 27 + e) * 27 + f
-  );
+  const offset = TOKENS + HASHES;
+  return { text: call, places: digits, offset, value: offset + fold(digits) };
 }
 
 function unpackCall(value: number): string {
@@ -120,21 +153,20 @@ function unpackCall(value: number): string {
 }
 
 /** A 15-bit locator field: a 4-character grid, or blank, RRR, RR73 or 73. */
-function packGrid(grid: string): number | undefined {
+function packGrid(grid: string): Packing | undefined {
   const special = ['', 'RRR', 'RR73', '73'].indexOf(grid);
   if (special >= 0) {
-    return GRIDS + 1 + special;
+    return {
+      text: grid,
+      how: `after the ${GRIDS} grids, blank, RRR, RR73, 73`,
+      value: GRIDS + 1 + special,
+    };
   }
 
-  if (!/^[A-R][A-R][0-9][0-9]$/.test(grid)) {
-    return undefined;
-  }
-
-  return (
-    ((grid.charCodeAt(0) - 65) * 18 + (grid.charCodeAt(1) - 65)) * 100 +
-    Number(grid[2]) * 10 +
-    Number(grid[3])
-  );
+  const digits = /^[A-R][A-R][0-9][0-9]$/.test(grid)
+    ? places(grid, [FIELDS, FIELDS, CH3, CH3])
+    : undefined;
+  return digits && { text: grid, places: digits, value: fold(digits) };
 }
 
 function unpackGrid(value: number): string {
@@ -162,6 +194,8 @@ export type Packed =
       readonly ok: true;
       readonly text: string;
       readonly bits: readonly number[];
+      /** The fields the bits are made of, in the order they go out. */
+      readonly fields: readonly Field[];
     }
   | { readonly ok: false; readonly error: string };
 
@@ -195,15 +229,19 @@ export function packMessage(message: string): Packed {
 
   const report = /^(R?)([+-])(\d{2})$/.exec(third);
   let locator = packGrid(third);
-  let roger = 0;
+  let roger = false;
   if (report) {
     const db = (report[2] === '-' ? -1 : 1) * Number(report[3]);
     if (db < -30 || db > 30) {
       return { ok: false, error: 'Signal reports run from -30 to +30 dB.' };
     }
 
-    locator = GRIDS + 35 + db;
-    roger = report[1] ? 1 : 0;
+    locator = {
+      text: third.replace(/^R/, ''),
+      how: `after the ${GRIDS} grids, 35 + report`,
+      value: GRIDS + 35 + db,
+    };
+    roger = Boolean(report[1]);
   }
 
   if (locator === undefined) {
@@ -213,16 +251,32 @@ export function packMessage(message: string): Packed {
     };
   }
 
-  const bits = [
-    ...bitsOf(call1, 28),
-    0,
-    ...bitsOf(call2, 28),
-    0,
-    roger,
-    ...bitsOf(locator, 15),
-    ...bitsOf(1, 3),
+  const field = (name: string, packing: Packing, count: number): Field => ({
+    name,
+    ...packing,
+    bits: bitsOf(packing.value, count),
+  });
+  const flag = (name: string, on: boolean) =>
+    field(name, { text: on ? 'yes' : 'no', value: on ? 1 : 0 }, 1);
+  const fields = [
+    field('Call 1', call1, 28),
+    flag('Call 1 /R', false),
+    field('Call 2', call2, 28),
+    flag('Call 2 /R', false),
+    flag('R', roger),
+    field(
+      report ? 'Report' : locator.places || !third ? 'Grid' : 'Reply',
+      locator,
+      15,
+    ),
+    field('Type', { text: 'standard', value: 1 }, 3),
   ];
-  return { ok: true, text: words.join(' '), bits };
+  return {
+    ok: true,
+    text: words.join(' '),
+    bits: fields.flatMap((f) => f.bits),
+    fields,
+  };
 }
 
 export function unpackMessage(bits: readonly number[]): string {
@@ -237,6 +291,85 @@ export function unpackMessage(bits: readonly number[]): string {
     unpackCall(valueOf(bits, 29, 57)),
     roger + unpackGrid(locator),
   ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/** Shown for a character the bits so far don't settle. */
+const UNKNOWN = '·';
+
+/** The values an `n`-bit field can still take, given its first bits. */
+function range(
+  bits: readonly number[],
+  start: number,
+  n: number,
+): { readonly low: number; readonly high: number } {
+  const known = Math.max(0, Math.min(n, bits.length - start));
+  const prefix = valueOf(bits, start, start + known);
+  const rest = 2 ** (n - known);
+  return { low: prefix * rest, high: prefix * rest + rest - 1 };
+}
+
+/**
+ * The characters of a mixed-radix field (most significant first) that every
+ * value from `low` to `high` agrees on, and the unknown mark for the rest.
+ */
+function digits(
+  low: number,
+  high: number,
+  alphabets: readonly string[],
+): string {
+  let weight = alphabets.reduce((w, a) => w * a.length, 1);
+  return alphabets
+    .map((alphabet) => {
+      weight /= alphabet.length;
+      const a = Math.floor(low / weight);
+      return a === Math.floor(high / weight)
+        ? alphabet[a % alphabet.length]
+        : UNKNOWN;
+    })
+    .join('');
+}
+
+/** As much of a callsign field as its first bits settle. */
+function partialCall(bits: readonly number[], start: number): string {
+  const { low, high } = range(bits, start, 28);
+  if (low === high) {
+    return unpackCall(low);
+  }
+
+  const base = TOKENS + HASHES;
+  if (low < base) {
+    return UNKNOWN.repeat(high < base ? 2 : 6);
+  }
+
+  const call = digits(low - base, high - base, [CH1, CH2, CH3, CH4, CH4, CH4]);
+  // Spaces pad a call; drop the ones that are settled at either end.
+  return call.replace(/^ /, '').replace(/ +$/, '');
+}
+
+/** As much of the locator field as its first bits settle. */
+function partialGrid(bits: readonly number[]): string {
+  const { low, high } = range(bits, 59, 15);
+  if (low === high) {
+    const roger = low > GRIDS + 4 && bits[58] ? 'R' : '';
+    return roger + unpackGrid(low);
+  }
+
+  return high < GRIDS
+    ? digits(low, high, ['ABCDEFGHIJKLMNOPQR', 'ABCDEFGHIJKLMNOPQR', CH3, CH3])
+    : UNKNOWN.repeat(4);
+}
+
+/**
+ * A standard message from however many of its 77 bits are in, the ones still
+ * missing shown as `UNKNOWN`: the bits go out most significant first, so each
+ * field fills in from the left as they arrive. It reads the fields as a
+ * standard message whatever the last three bits say, since bits heard without
+ * correction may say otherwise.
+ */
+export function partialMessage(bits: readonly number[]): string {
+  return [partialCall(bits, 0), partialCall(bits, 29), partialGrid(bits)]
     .filter(Boolean)
     .join(' ');
 }

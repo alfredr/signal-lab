@@ -1,4 +1,4 @@
-import { defineBlock, type DelayProcessor } from '../engine/block.ts';
+import { defineBlock } from '../engine/block.ts';
 import { si } from '../engine/format.ts';
 import { number } from '../engine/params.ts';
 
@@ -21,14 +21,26 @@ export const capacitor = defineBlock({
     }),
   },
   summary: (p) => `RC ${si(p.rc, 's')}`,
-  create(p, context): DelayProcessor {
-    const decay = Math.exp(-1 / (context.outputRates[0] * p.rc));
+  create(p, context) {
+    const rate = context.outputRates[0];
+    let decay = Math.exp(-1 / (rate * p.rc));
+    // The input just before this chunk.
+    let held = 0;
     return {
       latency: 1,
       process([x], [y], start, end) {
         for (let i = start; i < end; i++) {
-          y[i] = i > 0 ? decay * x[i - 1] : 0;
+          y[i] = decay * (i > 0 ? x[i - 1] : held);
         }
+      },
+      keep([x]: readonly Float32Array[], length: number) {
+        if (length > 0) {
+          held = x[length - 1];
+        }
+      },
+      update(next) {
+        decay = Math.exp(-1 / (rate * next.rc));
+        return true;
       },
     };
   },

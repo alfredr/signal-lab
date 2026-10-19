@@ -1,12 +1,15 @@
 // Turning a document into the flat circuit the simulator runs. Subsystems dissolve: their blocks
 // join the circuit under path ids ("rx/diode"), and each terminal's hidden port is wired to
-// whatever connects to the subsystem outside. Antennas are joined through a hidden Air block.
+// whatever connects to the subsystem outside. Each antenna becomes the halves of it that are
+// wired, one radiating and one hearing, and hidden Air blocks carry what the others radiate to
+// each one that hears.
 // The engine never sees hierarchy, so caching and loops work across subsystem boundaries.
-// Instruments only watch or set things, so they and the wires into them are left out.
+// Instruments only watch or set things, so they and the wires into them are left out, except
+// a Button, which is a source the face can push.
 
 import { blockType } from '../blocks/index.ts';
-import { isInstrument } from '../blocks/instruments.ts';
-import { airType } from '../blocks/radio.ts';
+import { isInstrument, isSimulated } from '../blocks/instruments.ts';
+import { airType, ANTENNA, HEAR, RADIATE } from '../blocks/radio.ts';
 import {
   portKey,
   type BlockNode,
@@ -27,10 +30,14 @@ import {
 import { evaluate } from './expressions.ts';
 import { displayName } from './subsystems.ts';
 
-/** Id of the hidden block that carries everything transmitted. */
+/** Ids of the hidden blocks that carry what antennas radiate. */
 const AIR = '@air';
-const TRANSMIT = 'antenna-tx';
-const RECEIVE = 'antenna-rx';
+
+/**
+ * The id of the half of an antenna that radiates. The half that hears keeps
+ * the antenna's own id, so its output is the antenna's.
+ */
+const radiating = (id: string) => `${id}@radiate`;
 
 /** Every binding in a document, worked out against the parameters in scope. */
 export type Bindings = {
@@ -119,7 +126,11 @@ export type Flattened = {
   readonly bindings: Bindings;
   /** For each subsystem output port, the engine port that carries its signal. */
   readonly aliases: ReadonlyMap<string, string>;
-  readonly transmitters: number;
+  /**
+   * For each antenna that hears, the Air block it hears, if anything else
+   * radiates.
+   */
+  readonly airs: ReadonlyMap<string, string | undefined>;
 };
 
 export function flatten(doc: LabDocument): Flattened {
@@ -127,8 +138,8 @@ export function flatten(doc: LabDocument): Flattened {
   const blocks: BlockNode[] = [];
   const wires: Wire[] = [];
   const aliases = new Map<string, string>();
-  const transmit: string[] = [];
-  const receive: string[] = [];
+  const radiates: string[] = [];
+  const hears: string[] = [];
 
   const walk = (diagram: Diagram, path: Path): void => {
     const byId = new Map(diagram.blocks.map((block) => [block.id, block]));
@@ -156,6 +167,10 @@ export function flatten(doc: LabDocument): Flattened {
       const block = byId.get(ref.block);
       if (!block || isInstrument(block.kind)) {
         return undefined;
+      }
+
+      if (block.kind === ANTENNA) {
+        return { block: radiating(pathId(path, ref.block)), port: 0 };
       }
 
       if (!isSubsystem(block)) {
@@ -187,21 +202,27 @@ export function flatten(doc: LabDocument): Flattened {
         continue;
       }
 
-      if (isInstrument(block.kind)) {
+      if (isInstrument(block.kind) && !isSimulated(block.kind)) {
         continue;
       }
 
       // Bound settings take their worked-out values; the engine sees plain numbers.
       const bound = bindings.values.get(id);
       const params = bound ? { ...block.params, ...bound } : block.params;
-      blocks.push({ id, kind: block.kind, x: 0, y: 0, params });
-
-      if (block.kind === TRANSMIT) {
-        transmit.push(id);
+      if (block.kind !== ANTENNA) {
+        blocks.push({ id, kind: block.kind, x: 0, y: 0, params });
+        continue;
       }
 
-      if (block.kind === RECEIVE) {
-        receive.push(id);
+      // An antenna radiates if something is wired in, and hears if its output goes anywhere.
+      if (diagram.wires.some((w) => w.to.block === block.id)) {
+        radiates.push(id);
+        blocks.push({ id: radiating(id), kind: RADIATE, x: 0, y: 0, params });
+      }
+
+      if (diagram.wires.some((w) => w.from.block === block.id)) {
+        hears.push(id);
+        blocks.push({ id, kind: HEAR, x: 0, y: 0, params });
       }
     }
 
@@ -216,35 +237,52 @@ export function flatten(doc: LabDocument): Flattened {
 
   walk(doc, []);
 
-  if (transmit.length) {
-    blocks.push({
-      id: AIR,
-      kind: airType(transmit.length).kind,
-      x: 0,
-      y: 0,
-      params: {},
+  // Each antenna that hears gets the sum of what the others radiate. Antennas
+  // that hear the same others share one Air block.
+  const airs = new Map<string, string | undefined>();
+  const byOthers = new Map<string, string>();
+  for (const id of hears) {
+    const others = radiates.filter((other) => other !== id);
+    if (!others.length) {
+      airs.set(id, undefined);
+      continue;
+    }
+
+    const key = others.join('\n');
+    let air = byOthers.get(key);
+    if (!air) {
+      const made = byOthers.size ? `${AIR}${byOthers.size + 1}` : AIR;
+      byOthers.set(key, made);
+      blocks.push({
+        id: made,
+        kind: airType(others.length).kind,
+        x: 0,
+        y: 0,
+        params: {},
+      });
+      others.forEach((other, k) =>
+        wires.push({
+          id: `${made}:in${k}`,
+          from: { block: radiating(other), port: 0 },
+          to: { block: made, port: k },
+        }),
+      );
+      air = made;
+    }
+
+    airs.set(id, air);
+    wires.push({
+      id: `${air}:to:${id}`,
+      from: { block: air, port: 0 },
+      to: { block: id, port: 0 },
     });
-    transmit.forEach((id, k) =>
-      wires.push({
-        id: `${AIR}:in${k}`,
-        from: { block: id, port: 0 },
-        to: { block: AIR, port: k },
-      }),
-    );
-    receive.forEach((id, k) =>
-      wires.push({
-        id: `${AIR}:out${k}`,
-        from: { block: AIR, port: 0 },
-        to: { block: id, port: 0 },
-      }),
-    );
   }
 
   return {
-    circuit: { duration: doc.duration, blocks, wires },
+    circuit: { blocks, wires },
     bindings,
     aliases,
-    transmitters: transmit.length,
+    airs,
   };
 }
 
@@ -269,8 +307,8 @@ export function signalsWithAliases(
 
 /**
  * Status for every block in the document by full id. A subsystem reports the
- * first error inside it, or the rates of its outputs; a receive antenna
- * explains when nothing is on the air.
+ * first error inside it, or the rates of its outputs; an antenna speaks for
+ * its two halves, and says when there is nothing else on the air to hear.
  */
 export function blockStatuses(
   doc: LabDocument,
@@ -278,7 +316,6 @@ export function blockStatuses(
   engine: ReadonlyMap<string, BlockStatus>,
 ): Map<string, BlockStatus> {
   const statuses = new Map<string, BlockStatus>();
-  const air = engine.get(AIR);
 
   const visit = (diagram: Diagram, path: Path): BlockStatus[] =>
     diagram.blocks.map((block) => {
@@ -287,7 +324,7 @@ export function blockStatuses(
       const binding = flat.bindings.errors.get(id);
       if (binding) {
         status = { state: 'error', message: `Binding: ${binding}.` };
-      } else if (isInstrument(block.kind)) {
+      } else if (isInstrument(block.kind) && !isSimulated(block.kind)) {
         // Instruments aren't simulated; they work whenever the page does.
         status = { state: 'ok', rates: [] };
       } else if (isSubsystem(block)) {
@@ -313,13 +350,8 @@ export function blockStatuses(
             ? { state: 'ok', rates }
             : { state: 'idle', reason: 'Nothing inside is running.' };
         }
-      } else if (block.kind === RECEIVE && flat.transmitters === 0) {
-        status = {
-          state: 'idle',
-          reason: 'Nothing is on the air. Add a Transmit antenna.',
-        };
-      } else if (block.kind === RECEIVE && air?.state === 'error') {
-        status = { state: 'error', message: `On the air: ${air.message}` };
+      } else if (block.kind === ANTENNA) {
+        status = antennaStatus(id, flat, engine);
       } else {
         status = engine.get(id) ?? { state: 'idle', reason: 'Not simulated.' };
       }
@@ -330,4 +362,41 @@ export function blockStatuses(
 
   visit(doc, []);
   return statuses;
+}
+
+/**
+ * An antenna's status from its halves: an error in either, or else what it
+ * hears, or else what it radiates.
+ */
+function antennaStatus(
+  id: string,
+  flat: Flattened,
+  engine: ReadonlyMap<string, BlockStatus>,
+): BlockStatus {
+  const radiate = engine.get(radiating(id));
+  const hear = engine.get(id);
+  const air = flat.airs.has(id) ? flat.airs.get(id) : null;
+  const carried = air ? engine.get(air) : undefined;
+  if (radiate?.state === 'error') {
+    return radiate;
+  }
+
+  if (carried?.state === 'error') {
+    return { state: 'error', message: `On the air: ${carried.message}` };
+  }
+
+  if (air === undefined) {
+    return {
+      state: 'idle',
+      reason:
+        'Nothing else is on the air. Wire a signal into another antenna for this one to hear.',
+    };
+  }
+
+  return (
+    hear ??
+    (radiate?.state === 'ok'
+      ? { state: 'ok', rates: [] }
+      : (radiate ?? { state: 'idle', reason: 'Not connected.' }))
+  );
 }

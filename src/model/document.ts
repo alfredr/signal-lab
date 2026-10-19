@@ -1,16 +1,20 @@
-// The lab document: a diagram, possibly containing subsystems, plus title, notes, duration
-// and the layout of its panel face. Documents are immutable; every edit returns a new one, which keeps undo trivial.
+// The lab document: a diagram, possibly containing subsystems, plus title, notes and the
+// layout of its panel face. Documents are immutable; every edit returns a new one, which keeps undo trivial.
 
 import { INPUT_TERMINAL, OUTPUT_TERMINAL } from '../blocks/terminals.ts';
 import type { BlockNode, PortRef, Wire } from '../engine/circuit.ts';
 import type { ParamValue, StoredParams, Unit } from '../engine/params.ts';
 import { isParameterName } from './expressions.ts';
+import { freeNames, renameUses } from './scopes.ts';
 
 // Instrument kinds, as in blocks/instruments.ts, which the model can't import
 // without pulling in the block library.
 const PLOT_KIND = 'plot';
 const CONTROL_KIND = 'control';
 const READOUT_KIND = 'readout';
+const SYMBOLS_KIND = 'symbols';
+/** Instruments that refer to a block by its `block` setting. */
+const READS_BLOCK: ReadonlySet<string> = new Set([READOUT_KIND, SYMBOLS_KIND]);
 
 export const FORMAT = 'signal-lab/2';
 export const SUBSYSTEM = 'subsystem';
@@ -61,8 +65,6 @@ export type LabDocument = Diagram & {
   readonly format: typeof FORMAT;
   readonly title: string;
   readonly notes: string;
-  /** Simulation window in seconds. */
-  readonly duration: number;
   /**
    * Where each instrument's widget sits on the face, by the instrument's full
    * id. Instruments without a spot are placed in the first free space.
@@ -79,6 +81,37 @@ export type Path = readonly string[];
  */
 export function pathId(path: Path, id: string): string {
   return [...path, id].join('/');
+}
+
+/**
+ * The full id of the block that `ref` names from the diagram at `path`. An
+ * instrument refers to blocks by such paths: down into subsystems by their
+ * ids, and out of the subsystem it is in by "..".
+ */
+export function resolveRef(path: Path, ref: string): string | undefined {
+  const parts = ref.split('/');
+  const up = parts.findIndex((part) => part !== '..');
+  return up < 0 || up > path.length
+    ? undefined
+    : pathId(path.slice(0, path.length - up), parts.slice(up).join('/'));
+}
+
+/** How the diagram at `path` refers to the block with full id `id`. */
+function relativeRef(path: Path, id: string): string {
+  const parts = id.split('/');
+  let shared = 0;
+  while (
+    shared < path.length &&
+    shared < parts.length - 1 &&
+    path[shared] === parts[shared]
+  ) {
+    shared++;
+  }
+
+  return [
+    ...Array<string>(path.length - shared).fill('..'),
+    ...parts.slice(shared),
+  ].join('/');
 }
 
 export function isSubsystem(
@@ -103,7 +136,6 @@ export function emptyDocument(): LabDocument {
     format: FORMAT,
     title: 'Untitled',
     notes: '',
-    duration: 1,
     blocks: [],
     wires: [],
   };
@@ -318,24 +350,41 @@ export function removeBlocks<D extends Diagram>(
 /**
  * Copies the blocks `ids`, and the wires among them, offset by (dx, dy) with
  * fresh ids. Returns the copies' ids. A subsystem's inside is shared, which is
- * safe because documents are never changed in place.
+ * safe because documents are never changed in place, unless instruments in it
+ * need pointing elsewhere: a copied instrument, at any depth, acts on the copy
+ * of what it acted on, if that was copied too. `path` is where the diagram
+ * sits, for references that leave it.
  */
 export function duplicate<D extends Diagram>(
   diagram: D,
   ids: ReadonlySet<string>,
   dx = 24,
   dy = 24,
+  path: Path = [],
 ): [D, string[]] {
   const chosen = diagram.blocks.filter((block) => ids.has(block.id));
   const blockId = idSource('b', diagram.blocks);
   const wireId = idSource('w', diagram.wires);
   const renamed = new Map(chosen.map((block) => [block.id, blockId()]));
-  const copies = chosen.map((block) => ({
-    ...block,
-    id: renamed.get(block.id)!,
-    x: block.x + dx,
-    y: block.y + dy,
-  }));
+  // A block's full id in the copy: a copied block's, or one inside it, or the same.
+  const prefix = path.length ? `${path.join('/')}/` : '';
+  const copied = (id: string) => {
+    const [head, ...rest] = id.startsWith(prefix)
+      ? id.slice(prefix.length).split('/')
+      : [];
+    const copy = head === undefined ? undefined : renamed.get(head);
+    return copy === undefined ? id : pathId(path, [copy, ...rest].join('/'));
+  };
+
+  const copies = chosen.map((block) => {
+    const id = renamed.get(block.id)!;
+    return {
+      ...withCopiedRefs(block, path, path, id, copied),
+      id,
+      x: block.x + dx,
+      y: block.y + dy,
+    };
+  });
   const wires = diagram.wires
     .filter(
       (wire) => renamed.has(wire.from.block) && renamed.has(wire.to.block),
@@ -420,37 +469,56 @@ export function removeParameter<D extends Diagram>(
   };
 }
 
-/**
- * Renames a parameter and rewrites the bindings that use it, in this diagram
- * and in the subsystems inside it.
- */
+/** Renames a parameter, and points what uses it at the new name. */
 export function renameParameter<D extends Diagram>(
   diagram: D,
   from: string,
   to: string,
 ): D {
-  const word = new RegExp(`\\b${from}\\b`, 'g');
-  const rewrite = <T extends Diagram>(d: T): T => ({
-    ...d,
-    blocks: d.blocks.map((block) => ({
-      ...block,
-      ...(block.kind === CONTROL_KIND && block.params.target === from
-        ? { params: { ...block.params, target: to } }
-        : {}),
-      ...(block.bindings
-        ? {
-            bindings: Object.fromEntries(
-              Object.entries(block.bindings).map(([setting, expression]) => [
-                setting,
-                expression.replace(word, to),
-              ]),
-            ),
-          }
-        : {}),
-      ...(block.inner ? { inner: rewrite(block.inner) } : {}),
-    })),
-  });
-  return rewrite(updateParameter(diagram, from, { name: to }));
+  return renameUses(
+    updateParameter(diagram, from, { name: to }),
+    new Map([[from, to]]),
+  );
+}
+
+/**
+ * Why parameter `from` of the diagram at `path` can't be renamed `to`, if it
+ * can't: each name has to go on meaning what it meant. So `to` mustn't be
+ * declared here already, nor used here from a diagram further out, which the
+ * renamed parameter would hide; and no subsystem inside that uses `from` may
+ * have a `to` of its own, which would take its place there.
+ */
+export function renameProblem(
+  doc: LabDocument,
+  path: Path,
+  from: string,
+  to: string,
+): string | undefined {
+  const diagram = diagramAt(doc, path);
+  if (to === from || !diagram) {
+    return undefined;
+  }
+
+  if (diagram.parameters?.some((p) => p.name === to)) {
+    return `There is already a parameter called "${to}" here.`;
+  }
+
+  if (freeNames(diagram).has(to)) {
+    return `Something here already uses a "${to}" from further out, which this would hide.`;
+  }
+
+  const captured = (d: Diagram): boolean =>
+    d.blocks.some(
+      (block) =>
+        block.inner !== undefined &&
+        !block.inner.parameters?.some((p) => p.name === from) &&
+        ((block.inner.parameters?.some((p) => p.name === to) &&
+          freeNames({ ...block.inner, parameters: [] }).has(from)) ||
+          captured(block.inner)),
+    );
+  return captured(diagram)
+    ? `A subsystem inside has a parameter of its own called "${to}", which would take this one's place there.`
+    : undefined;
 }
 
 export function setParam<D extends Diagram>(
@@ -502,12 +570,13 @@ export function removeWire<D extends Diagram>(diagram: D, id: string): D {
 }
 
 /**
- * What an instrument refers to: a readout's block, or the block whose setting
- * a control sets, as a path relative to the instrument's own diagram.
+ * What an instrument refers to: the block a readout or a Bits to tones view
+ * reads, or the block whose setting a control sets, as a path relative to the
+ * instrument's own diagram.
  */
 function instrumentRef(block: LabBlock): string | undefined {
   const { params } = block;
-  if (block.kind === READOUT_KIND && typeof params.block === 'string') {
+  if (READS_BLOCK.has(block.kind) && typeof params.block === 'string') {
     return params.block || undefined;
   }
 
@@ -520,7 +589,7 @@ function instrumentRef(block: LabBlock): string | undefined {
 }
 
 function withInstrumentRef(block: LabBlock, ref: string): LabBlock {
-  if (block.kind === READOUT_KIND) {
+  if (READS_BLOCK.has(block.kind)) {
     return { ...block, params: { ...block.params, block: ref } };
   }
 
@@ -534,6 +603,47 @@ function withInstrumentRef(block: LabBlock, ref: string): LabBlock {
   };
 }
 
+/**
+ * A copied block, which sits in the diagram at `from` and whose copy, `id`,
+ * sits in the diagram at `to`, with what instruments refer to, its own and
+ * those inside it, pointed at the copies of copied blocks. `copied` gives a
+ * block's full id in the copy.
+ */
+function withCopiedRefs(
+  block: LabBlock,
+  from: Path,
+  to: Path,
+  id: string,
+  copied: (id: string) => string,
+): LabBlock {
+  let next = block;
+  const ref = instrumentRef(block);
+  const full = ref === undefined ? undefined : resolveRef(from, ref);
+  const now = full === undefined ? undefined : relativeRef(to, copied(full));
+  if (now !== undefined && now !== ref) {
+    next = withInstrumentRef(next, now);
+  }
+
+  // A plot stacked under a view names it by full id.
+  const host = block.kind === PLOT_KIND ? block.params.stack : undefined;
+  if (typeof host === 'string' && host && copied(host) !== host) {
+    next = { ...next, params: { ...next.params, stack: copied(host) } };
+  }
+
+  if (block.inner) {
+    const inside = [...from, block.id];
+    const there = [...to, id];
+    const blocks = block.inner.blocks.map((b) =>
+      withCopiedRefs(b, inside, there, b.id, copied),
+    );
+    if (blocks.some((b, i) => b !== block.inner!.blocks[i])) {
+      next = { ...next, inner: { ...block.inner, blocks } };
+    }
+  }
+
+  return next;
+}
+
 /** Every block in the document with its full id, depth first. */
 export function everyBlock(
   diagram: Diagram,
@@ -545,37 +655,164 @@ export function everyBlock(
   ]);
 }
 
+/** A parameter, by the diagram that declares it. */
+type ParameterRef = {
+  readonly scope: Path;
+  readonly parameter: string;
+};
+
 /**
- * Follows blocks that moved between diagrams (by grouping or ungrouping) from
- * `before` to `after`: the face layout, and what readouts and controls refer
- * to. `rename` gives a block's new full id, or undefined if it is gone.
+ * What an instrument refers to, worked out from where it sits: a block, by
+ * full id, that a readout or a Bits to tones view reads or whose setting a
+ * control sets; or a parameter that a control sets, by name or as a
+ * subsystem's setting.
+ */
+type Reference =
+  | { readonly block: string; readonly setting?: string }
+  | ParameterRef;
+
+export function referenceOf(
+  doc: LabDocument,
+  path: Path,
+  block: LabBlock,
+): Reference | undefined {
+  const { params } = block;
+  if (READS_BLOCK.has(block.kind)) {
+    const id =
+      typeof params.block === 'string' && params.block
+        ? resolveRef(path, params.block)
+        : undefined;
+    return id === undefined ? undefined : { block: id };
+  }
+
+  const target = params.target;
+  if (block.kind !== CONTROL_KIND || typeof target !== 'string') {
+    return undefined;
+  }
+
+  const dot = target.lastIndexOf('.');
+  if (dot <= 0) {
+    // The nearest diagram declaring it.
+    for (let depth = path.length; depth >= 0; depth--) {
+      const scope = path.slice(0, depth);
+      if (diagramAt(doc, scope)?.parameters?.some((p) => p.name === target)) {
+        return { scope, parameter: target };
+      }
+    }
+
+    return undefined;
+  }
+
+  const id = resolveRef(path, target.slice(0, dot));
+  if (id === undefined) {
+    return undefined;
+  }
+
+  const setting = target.slice(dot + 1);
+  const holder = blockAt(doc, id);
+  return holder &&
+    isSubsystem(holder) &&
+    holder.inner.parameters?.some((p) => p.name === setting)
+    ? { scope: id.split('/'), parameter: setting }
+    : { block: id, setting };
+}
+
+/**
+ * How an instrument in the diagram at `path` refers to `reference`: a
+ * parameter by name where that finds it, or else as its subsystem's setting.
+ * Undefined for a top-level parameter hidden by one of the same name.
+ */
+function referenceText(
+  doc: LabDocument,
+  path: Path,
+  reference: Reference,
+): string | undefined {
+  if ('block' in reference) {
+    const ref = relativeRef(path, reference.block);
+    return reference.setting === undefined
+      ? ref
+      : `${ref}.${reference.setting}`;
+  }
+
+  const { scope, parameter } = reference;
+  const around =
+    scope.length <= path.length && scope.every((id, i) => path[i] === id);
+  const hidden = path
+    .slice(scope.length)
+    .some((_, i) =>
+      diagramAt(doc, path.slice(0, scope.length + i + 1))?.parameters?.some(
+        (p) => p.name === parameter,
+      ),
+    );
+  if (around && !hidden) {
+    return parameter;
+  }
+
+  return scope.length
+    ? `${relativeRef(path, scope.join('/'))}.${parameter}`
+    : undefined;
+}
+
+/**
+ * Follows blocks and parameters that moved, from `before` to `after`: the face
+ * layout, and what instruments refer to, wherever they are. `rename` gives a
+ * block's new full id, or undefined if it is gone. A parameter goes with the
+ * subsystem it belongs to, unless `parameter`, given where that would take it,
+ * says otherwise: where it went, or undefined if it is gone. An instrument
+ * left referring to nothing is cleared.
  */
 export function moveRefs(
   before: LabDocument,
   after: LabDocument,
   rename: (fullId: string) => string | undefined,
+  parameter: (
+    was: ParameterRef,
+    followed: ParameterRef | undefined,
+  ) => ParameterRef | undefined = (_, followed) => followed,
 ): LabDocument {
+  const follow = (reference: Reference): Reference | undefined => {
+    if ('block' in reference) {
+      const id = rename(reference.block);
+      return id === undefined ? undefined : { ...reference, block: id };
+    }
+
+    const holder = reference.scope.length
+      ? rename(reference.scope.join('/'))
+      : '';
+    return parameter(
+      reference,
+      holder === undefined
+        ? undefined
+        : { ...reference, scope: holder ? holder.split('/') : [] },
+    );
+  };
+
   let next = after;
   for (const { id, path, block } of everyBlock(before)) {
-    const ref = instrumentRef(block);
     const moved = rename(id);
-    if (ref === undefined || moved === undefined) {
+    if (moved === undefined) {
       continue;
     }
 
-    const target = rename(pathId(path, ref)) ?? pathId(path, ref);
     const parts = moved.split('/');
-    const prefix = parts.slice(0, -1).join('/');
-    const relative = prefix
-      ? target.startsWith(`${prefix}/`)
-        ? target.slice(prefix.length + 1)
-        : undefined
-      : target;
-    if (relative !== undefined && relative !== ref) {
-      next = updateDiagramAt(next, parts.slice(0, -1), (d) =>
-        updateBlock(d, parts[parts.length - 1]!, (b) =>
-          withInstrumentRef(b, relative),
-        ),
+    const at = parts.slice(0, -1);
+    const local = parts[parts.length - 1]!;
+    const reference = referenceOf(before, path, block);
+    if (reference) {
+      const now = follow(reference);
+      const text = (now && referenceText(after, at, now)) ?? '';
+      const key = block.kind === CONTROL_KIND ? 'target' : 'block';
+      if (text !== blockAt(after, moved)?.params[key]) {
+        next = updateDiagramAt(next, at, (d) => setParam(d, local, key, text));
+      }
+    }
+
+    // A plot stacked under a view refers to it by full id.
+    const host = block.kind === PLOT_KIND ? block.params.stack : undefined;
+    const now = typeof host === 'string' && host ? rename(host) : undefined;
+    if (now !== undefined && now !== host) {
+      next = updateDiagramAt(next, at, (d) =>
+        setParam(d, local, 'stack', now),
       );
     }
   }
@@ -614,7 +851,37 @@ export function renameParameterAt(
   from: string,
   to: string,
 ): LabDocument {
-  return updateDiagramAt(doc, path, (d) => renameParameter(d, from, to));
+  let next = updateDiagramAt(doc, path, (d) => renameParameter(d, from, to));
+  // A subsystem's parameters are its settings, so its binding follows this one.
+  if (path.length) {
+    next = updateDiagramAt(next, path.slice(0, -1), (d) =>
+      updateBlock(d, path[path.length - 1]!, (block) =>
+        block.bindings && from in block.bindings
+          ? {
+              ...block,
+              bindings: Object.fromEntries(
+                Object.entries(block.bindings).map(([setting, expression]) => [
+                  setting === from ? to : setting,
+                  expression,
+                ]),
+              ),
+            }
+          : block,
+      ),
+    );
+  }
+
+  // And so do controls on it, wherever they are.
+  const here = path.join('/');
+  return moveRefs(
+    doc,
+    next,
+    (id) => id,
+    (was, followed) =>
+      was.scope.join('/') === here && was.parameter === from
+        ? { scope: path, parameter: to }
+        : followed,
+  );
 }
 
 export function setFaceSpot(
@@ -639,7 +906,7 @@ export function setNotes(
 
 export function setSettings(
   doc: LabDocument,
-  change: Partial<Pick<LabDocument, 'title' | 'notes' | 'duration'>>,
+  change: Partial<Pick<LabDocument, 'title' | 'notes'>>,
 ): LabDocument {
   return { ...doc, ...change };
 }
@@ -788,6 +1055,15 @@ function readParameters(value: unknown): Pick<Diagram, 'parameters'> {
   return parameters.length ? { parameters } : {};
 }
 
+/**
+ * Kinds that have been renamed, by their old names: transmit and receive
+ * antennas became one Antenna, which does whatever it is wired to do.
+ */
+const RENAMED: Readonly<Record<string, string>> = {
+  'antenna-tx': 'antenna',
+  'antenna-rx': 'antenna',
+};
+
 function readDiagram(value: Record<string, unknown>, depth: number): Diagram {
   const blocks: LabBlock[] = [];
   for (const b of Array.isArray(value.blocks) ? value.blocks : []) {
@@ -795,6 +1071,7 @@ function readDiagram(value: Record<string, unknown>, depth: number): Diagram {
       !isRecord(b) ||
       !isString(b.id) ||
       b.id.includes('/') ||
+      b.id === '..' ||
       !isString(b.kind) ||
       !isNumber(b.x) ||
       !isNumber(b.y)
@@ -812,7 +1089,7 @@ function readDiagram(value: Record<string, unknown>, depth: number): Diagram {
 
     blocks.push({
       id: b.id,
-      kind: b.kind,
+      kind: RENAMED[b.kind] ?? b.kind,
       x: b.x,
       y: b.y,
       params: readParams(b.params),
@@ -857,8 +1134,6 @@ export function readDocument(value: unknown): LabDocument {
     format: FORMAT,
     title: isString(value.title) ? value.title : 'Untitled',
     notes: isString(value.notes) ? value.notes : '',
-    duration:
-      isNumber(value.duration) && value.duration > 0 ? value.duration : 1,
     ...readDiagram(value, 0),
     ...readFace(value.face),
   };

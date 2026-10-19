@@ -1,32 +1,38 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
+import { dictionary } from 'cmu-pronouncing-dictionary';
+
+import { setDictionary } from '../src/blocks/pronouncing.ts';
 import { INPUT_TERMINAL, OUTPUT_TERMINAL } from '../src/blocks/terminals.ts';
 import { diagram } from '../src/model/build.ts';
 import {
+  diagramAt,
   duplicate,
   FORMAT,
+  type LabDocument,
+  readDocument,
   removeBlocks,
   updateDiagramAt,
-  type LabDocument,
 } from '../src/model/document.ts';
 import { examples } from '../src/model/examples.ts';
 import { template } from '../src/model/library.ts';
-import { groupAt, ungroupAt } from '../src/model/subsystems.ts';
+import { groupAt, ungroupAt, wiredOutside } from '../src/model/subsystems.ts';
 import { simulateDocument } from './helpers.ts';
 
-const simulate = simulateDocument;
+const simulate = (d: LabDocument) => simulateDocument(d, 0.01);
+
+// The worker fetches this for documents that speak; the tests load it here.
+setDictionary(new Map(Object.entries(dictionary)));
 
 function doc(
   parts: Parameters<typeof diagram>[0],
   links: Parameters<typeof diagram>[1],
-  duration = 0.01,
 ): LabDocument {
   return {
     format: FORMAT,
     title: 'test',
     notes: '',
-    duration,
     ...diagram(parts, links),
   };
 }
@@ -158,8 +164,79 @@ describe('subsystems', () => {
   });
 });
 
+describe('wired outside', () => {
+  // A stage holding the doubler, so the doubler's terminals lead out through
+  // the stage's.
+  const stage = diagram(
+    {
+      in: { kind: INPUT_TERMINAL, x: 0, y: 0 },
+      inner: { kind: 'subsystem', x: 100, y: 0, inner: doubler },
+      out: { kind: OUTPUT_TERMINAL, x: 200, y: 0 },
+    },
+    [
+      ['in', 'inner'],
+      ['inner', 'out'],
+    ],
+  );
+  const twoCopies = doc(
+    {
+      tone: {
+        kind: 'oscillator',
+        x: 0,
+        y: 0,
+        name: 'Tone',
+        params: { rate: 8000 },
+      },
+      dc: { kind: 'constant', x: 0, y: 80, params: { rate: 8000 } },
+      first: { kind: 'subsystem', x: 100, y: 0, inner: stage },
+      second: { kind: 'subsystem', x: 100, y: 80, inner: stage },
+      sum: { kind: 'adder', x: 200, y: 0 },
+      quiet: { kind: 'gain', x: 200, y: 80 },
+    },
+    [
+      ['tone', 'first'],
+      ['dc', 'second'],
+      ['first', 'sum:0'],
+      ['first', 'quiet'],
+      ['second', 'sum:1'],
+    ],
+  );
+  const ends = (d: LabDocument, path: string[], terminal: string) =>
+    wiredOutside(
+      d,
+      path,
+      diagramAt(d, path)!.blocks.find((b) => b.id === terminal)!,
+    ).map(({ id, label }) => `${id}: ${label}`);
+
+  test('each copy of a subsystem is wired on its own', () => {
+    assert.deepEqual(ends(twoCopies, ['first'], 'in'), ['tone: Tone']);
+    assert.deepEqual(ends(twoCopies, ['second'], 'in'), ['dc: DC']);
+    // An output can go several places; a port is named where there are several.
+    assert.deepEqual(ends(twoCopies, ['first'], 'out'), [
+      'sum: Adder › a',
+      'quiet: Gain',
+    ]);
+  });
+
+  test('from deeper in, the trail leads on out through the terminals around it', () => {
+    assert.deepEqual(ends(twoCopies, ['second', 'inner'], 'in'), ['dc: DC']);
+    assert.deepEqual(ends(twoCopies, ['second', 'inner'], 'out'), [
+      'sum: Adder › b',
+    ]);
+  });
+
+  test('a terminal with nothing on it outside has nothing to show', () => {
+    const loose = updateDiagramAt(twoCopies, [], (d) => ({
+      ...d,
+      wires: d.wires.filter((w) => w.from.block !== 'dc'),
+    }));
+    assert.deepEqual(ends(loose, ['second', 'inner'], 'in'), []);
+    assert.deepEqual(ends(loose, ['first'], 'in'), ['tone: Tone']);
+  });
+});
+
 describe('antennas', () => {
-  test('a receive antenna hears every transmitter, plus its own noise', () => {
+  test('an antenna hears every other antenna, plus its own noise', () => {
     const { signals } = simulate(
       doc(
         {
@@ -175,13 +252,15 @@ describe('antennas', () => {
             y: 60,
             params: { frequency: 3000, rate: 48000 },
           },
-          ta: { kind: 'antenna-tx', x: 100, y: 0 },
-          tb: { kind: 'antenna-tx', x: 100, y: 60, params: { gain: -6 } },
-          rx: { kind: 'antenna-rx', x: 0, y: 200, params: { noise: -120 } },
+          ta: { kind: 'antenna', x: 100, y: 0 },
+          tb: { kind: 'antenna', x: 100, y: 60, params: { gain: -6 } },
+          rx: { kind: 'antenna', x: 0, y: 200, params: { noise: -120 } },
+          meter: { kind: 'meter', x: 200, y: 200 },
         },
         [
           ['a', 'ta'],
           ['b', 'tb'],
+          ['rx', 'meter'],
         ],
       ),
     );
@@ -197,13 +276,96 @@ describe('antennas', () => {
     assert.ok(worst < 1e-4, `worst ${worst}`);
   });
 
-  test('with no transmitter the receive antenna says so', () => {
+  test('transmit and receive antennas saved before become Antennas', () => {
+    const doc = readDocument({
+      format: FORMAT,
+      title: 'old',
+      notes: '',
+      blocks: [
+        {
+          id: 'osc',
+          kind: 'oscillator',
+          x: 0,
+          y: 0,
+          params: { rate: 48000 },
+        },
+        { id: 'tx', kind: 'antenna-tx', x: 100, y: 0, params: {} },
+        { id: 'rx', kind: 'antenna-rx', x: 0, y: 100, params: {} },
+        { id: 'm', kind: 'meter', x: 100, y: 100, params: {} },
+      ],
+      wires: [
+        {
+          id: 'w1',
+          from: { block: 'osc', port: 0 },
+          to: { block: 'tx', port: 0 },
+        },
+        {
+          id: 'w2',
+          from: { block: 'rx', port: 0 },
+          to: { block: 'm', port: 0 },
+        },
+      ],
+    });
+    assert.deepEqual(
+      doc.blocks.map((b) => b.kind),
+      ['oscillator', 'antenna', 'antenna', 'meter'],
+    );
+    assert.equal(simulate(doc).status.get('rx')?.state, 'ok');
+  });
+
+  test('with nothing else on the air an antenna says so', () => {
     const { status } = simulate(
-      doc({ rx: { kind: 'antenna-rx', x: 0, y: 0 } }, []),
+      doc(
+        {
+          rx: { kind: 'antenna', x: 0, y: 0 },
+          meter: { kind: 'meter', x: 100, y: 0 },
+        },
+        [['rx', 'meter']],
+      ),
     );
     const rx = status.get('rx');
     assert.equal(rx?.state, 'idle');
-    assert.match(rx.state === 'idle' ? rx.reason : '', /Transmit antenna/);
+    assert.match(rx.state === 'idle' ? rx.reason : '', /another antenna/);
+  });
+
+  test('an antenna that both sends and hears hears only the others', () => {
+    const { signals, status } = simulate(
+      doc(
+        {
+          a: {
+            kind: 'oscillator',
+            x: 0,
+            y: 0,
+            params: { frequency: 1000, rate: 48000 },
+          },
+          b: {
+            kind: 'oscillator',
+            x: 0,
+            y: 60,
+            params: { frequency: 3000, rate: 48000 },
+          },
+          one: { kind: 'antenna', x: 100, y: 0, params: { noise: -120 } },
+          two: { kind: 'antenna', x: 100, y: 60, params: { noise: -120 } },
+          meterOne: { kind: 'meter', x: 200, y: 0 },
+          meterTwo: { kind: 'meter', x: 200, y: 60 },
+        },
+        [
+          ['a', 'one'],
+          ['b', 'two'],
+          ['one', 'meterOne'],
+          ['two', 'meterTwo'],
+        ],
+      ),
+    );
+    assert.equal(status.get('one')?.state, 'ok');
+    const one = signals.get('one:0')!.data;
+    const b = signals.get('b:0')!.data;
+    let worst = 0;
+    for (let i = 0; i < one.length; i++) {
+      worst = Math.max(worst, Math.abs(one[i] - b[i]));
+    }
+
+    assert.ok(worst < 1e-4, `worst ${worst}`);
   });
 });
 

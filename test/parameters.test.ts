@@ -24,7 +24,6 @@ const documentOf = (inside: Diagram): LabDocument => ({
   format: FORMAT,
   title: 'test',
   notes: '',
-  duration: 0.01,
   ...inside,
 });
 
@@ -37,7 +36,6 @@ function tuned(): LabDocument {
     format: FORMAT,
     title: 'test',
     notes: '',
-    duration: 0.01,
     ...diagram(
       {
         lo: {

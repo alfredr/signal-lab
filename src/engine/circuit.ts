@@ -26,13 +26,8 @@ export type Wire = {
   readonly to: PortRef;
 };
 
-/**
- * Everything the simulator needs: the blocks, how they connect, and how long
- * to run.
- */
+/** Everything the simulator needs: the blocks and how they connect. */
 export type Circuit = {
-  /** Simulation window in seconds. */
-  readonly duration: number;
   readonly blocks: readonly BlockNode[];
   readonly wires: readonly Wire[];
 };

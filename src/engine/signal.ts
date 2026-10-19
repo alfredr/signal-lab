@@ -6,12 +6,12 @@ export type Signal = {
 };
 
 /**
- * How many samples a signal at `rate` holds over a window of `duration`
- * seconds. Every wire uses this rule, so signals at the same rate always line
- * up sample for sample.
+ * How many samples of a stream at `rate` cover its first `time` seconds. Every
+ * wire uses this rule, so streams at the same rate always line up sample for
+ * sample, and a chunk ends at the same instant on every wire.
  */
-export function sampleCount(duration: number, rate: number): number {
-  return Math.max(0, Math.floor(duration * rate + 1e-6));
+export function sampleCount(time: number, rate: number): number {
+  return Math.max(0, Math.floor(time * rate + 1e-6));
 }
 
 /** Mean power (mean square) of a signal. */

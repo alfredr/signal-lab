@@ -1,13 +1,37 @@
 import type { BlockType, Category } from '../engine/block.ts';
 import { capacitor } from './detectors.ts';
-import { bandpass, highpass, lowpass } from './filters.ts';
-import { ft8Decoder, ft8Transmitter } from './ft8.ts';
-import { control, note, plot, readout, speaker } from './instruments.ts';
+import { bandpass, gaussian, highpass, lowpass } from './filters.ts';
+import {
+  crcBlock,
+  ft8Decoder,
+  ft8Mapper,
+  ft8Message,
+  ft8Transmitter,
+  ldpcBlock,
+} from './ft8.ts';
+import {
+  button,
+  control,
+  note,
+  plot,
+  readout,
+  speaker,
+  symbols,
+} from './instruments.ts';
 import { adder, gain, mixer, offset } from './math.ts';
 import { meter, snrMeter } from './meters.ts';
 import { clipper, diode, rectifier, square } from './nonlinear.ts';
-import { airType, receiveAntenna, transmitAntenna } from './radio.ts';
-import { constant, noise, oscillator, sweep, voice } from './sources.ts';
+import { airType, antenna, hear, radiate } from './radio.ts';
+import {
+  constant,
+  noise,
+  oscillator,
+  recording,
+  sweep,
+  vco,
+  voice,
+} from './sources.ts';
+import { speech } from './speech.ts';
 import { inputTerminal, outputTerminal } from './terminals.ts';
 import { delay, hilbert, resample } from './time.ts';
 
@@ -15,9 +39,12 @@ import { delay, hilbert, resample } from './time.ts';
 export const blockTypes: readonly BlockType[] = [
   oscillator,
   voice,
+  recording,
+  speech,
   noise,
   constant,
   sweep,
+  vco,
   gain,
   offset,
   adder,
@@ -29,13 +56,16 @@ export const blockTypes: readonly BlockType[] = [
   lowpass,
   highpass,
   bandpass,
+  gaussian,
   capacitor,
   meter,
   snrMeter,
-  ft8Transmitter,
+  ft8Message,
+  crcBlock,
+  ldpcBlock,
+  ft8Mapper,
   ft8Decoder,
-  transmitAntenna,
-  receiveAntenna,
+  antenna,
   delay,
   hilbert,
   resample,
@@ -45,6 +75,8 @@ export const blockTypes: readonly BlockType[] = [
   speaker,
   control,
   readout,
+  symbols,
+  button,
   note,
 ];
 
@@ -62,11 +94,17 @@ export const categories: readonly Category[] = [
   'Instruments',
 ];
 
-const byKind = new Map(blockTypes.map((type) => [type.kind, type]));
+const byKind = new Map(
+  [...blockTypes, radiate, hear, ft8Transmitter].map((type) => [
+    type.kind,
+    type,
+  ]),
+);
 
 /**
- * A block type by kind, including the internal Air blocks the model adds for
- * antennas.
+ * A block type by kind, including the halves antennas run as and the Air
+ * blocks the model adds between them, and the one-block FT8 transmitter of
+ * documents saved before the subsystem replaced it.
  */
 export function blockType(kind: string): BlockType | undefined {
   if (kind.startsWith('air:')) {

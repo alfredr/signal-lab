@@ -7,6 +7,7 @@ import { INPUT_TERMINAL, OUTPUT_TERMINAL } from '../blocks/terminals.ts';
 import type { BlockType } from '../engine/block.ts';
 import { portKey, type PortRef, type Wire } from '../engine/circuit.ts';
 import {
+  diagramAt,
   idSource,
   isSubsystem,
   moveRefs,
@@ -18,8 +19,10 @@ import {
   type Diagram,
   type LabBlock,
   type LabDocument,
+  type Parameter,
   type Path,
 } from './document.ts';
+import { declaredWithin, freeNames, freshName, renameUses } from './scopes.ts';
 
 const subsystemTypes = new WeakMap<Diagram, BlockType>();
 
@@ -63,8 +66,69 @@ export function displayName(block: LabBlock): string {
   return block.name || typeOf(block)?.label || block.kind;
 }
 
-const isTerminal = (block: LabBlock) =>
+export const isTerminal = (block: LabBlock) =>
   block.kind === INPUT_TERMINAL || block.kind === OUTPUT_TERMINAL;
+
+/** A block outside a subsystem that one of its terminals is wired to. */
+export type Outside = {
+  /** The block's full id. */
+  readonly id: string;
+  /** Its name, and the port's when it has several. */
+  readonly label: string;
+};
+
+/**
+ * What `terminal`, inside the subsystem at `path`, is wired to outside: the
+ * block at the far end of each wire, followed on out through the terminals of
+ * any subsystems around it. Each copy of a subsystem is wired on its own, so
+ * this is for the copy that `path` leads to.
+ */
+export function wiredOutside(
+  doc: LabDocument,
+  path: Path,
+  terminal: LabBlock,
+): Outside[] {
+  const around = path.slice(0, -1);
+  const id = path[path.length - 1];
+  const parent = diagramAt(doc, around);
+  const holder = parent?.blocks.find((b) => b.id === id);
+  if (!parent || !holder || !isSubsystem(holder)) {
+    return [];
+  }
+
+  const input = terminal.kind === INPUT_TERMINAL;
+  const { inputs, outputs } = terminals(holder.inner);
+  const port = (input ? inputs : outputs).findIndex(
+    (t) => t.id === terminal.id,
+  );
+  const ends = parent.wires.flatMap((wire) => {
+    const [near, far] = input ? [wire.to, wire.from] : [wire.from, wire.to];
+    return near.block === id && near.port === port ? [far] : [];
+  });
+  return ends.flatMap((end) => {
+    const block = parent.blocks.find((b) => b.id === end.block);
+    if (!block) {
+      return [];
+    }
+
+    if (around.length && isTerminal(block)) {
+      return wiredOutside(doc, around, block);
+    }
+
+    const type = typeOf(block);
+    const ports = (input ? type?.outputs : type?.inputs) ?? [];
+    const name = displayName(block);
+    return [
+      {
+        id: pathId(around, block.id),
+        label:
+          ports.filter((p) => !p.hidden).length > 1
+            ? `${name} › ${ports[end.port]?.name ?? end.port + 1}`
+            : name,
+      },
+    ];
+  });
+}
 
 /**
  * Moves the blocks `ids` into a new subsystem in their place. Each outside
@@ -181,30 +245,123 @@ function group<D extends Diagram>(
 
 /**
  * Replaces a subsystem with its contents, placed where it stood. Wires that
- * ran through its terminals are joined up directly. Returns the new id of
- * every block that came out.
+ * ran through its terminals are joined up directly, around any loop through it
+ * too. Returns the new id of every block that came out. `visible` holds the
+ * parameter names declared in the diagrams around this one.
  */
 function ungroup<D extends Diagram>(
   diagram: D,
   id: string,
-): { diagram: D; renamed: ReadonlyMap<string, string> } | undefined {
+  visible: ReadonlySet<string> = new Set(),
+):
+  | {
+      diagram: D;
+      renamed: ReadonlyMap<string, string>;
+      /** The new name of each parameter that came out. */
+      parameters: ReadonlyMap<string, string>;
+    }
+  | undefined {
   const block = diagram.blocks.find((b) => b.id === id);
   if (!block || !isSubsystem(block)) {
     return undefined;
   }
 
-  const { inputs, outputs } = terminals(block.inner);
-  const contents = block.inner.blocks.filter((b) => !isTerminal(b));
+  // The subsystem's parameters come out with it, each name still meaning what
+  // it meant. One bound outside gives way to its expression, which means the
+  // same out here; a subsystem further in that used it gets a parameter of
+  // its own, bound to that expression from out here. The others join this
+  // diagram's, under a new name where theirs would hide a name in use here,
+  // or a name further in would hide theirs.
+  const bound = block.bindings ?? {};
+  const avoid = new Set([
+    ...visible,
+    ...(diagram.parameters ?? []).map((p) => p.name),
+    ...freeNames({ ...diagram, parameters: [] }),
+    ...block.inner.blocks.flatMap((b) =>
+      b.inner ? [...declaredWithin(b.inner)] : [],
+    ),
+  ]);
+  const renames = new Map<string, string>();
+  const kept = new Map<string, string>();
+  const moved: Parameter[] = [];
+  const handed: { readonly parameter: Parameter; expression: string }[] = [];
+  for (const parameter of block.inner.parameters ?? []) {
+    const expression = bound[parameter.name];
+    if (expression !== undefined) {
+      renames.set(parameter.name, `(${expression})`);
+      handed.push({ parameter, expression });
+      continue;
+    }
+
+    const name = freshName(parameter.name, avoid);
+    avoid.add(name);
+    moved.push({ ...parameter, name });
+    renames.set(parameter.name, name);
+    kept.set(parameter.name, name);
+  }
+
+  // Subsystems further in that use a bound parameter declare it themselves,
+  // so the expression stops at their edge.
+  const handedTo = new Map<string, typeof handed>();
+  const prepared = block.inner.blocks.map((b) => {
+    if (!b.inner) {
+      return b;
+    }
+
+    const free = freeNames(b.inner);
+    const theirs = handed.filter(({ parameter }) => free.has(parameter.name));
+    if (!theirs.length) {
+      return b;
+    }
+
+    handedTo.set(b.id, theirs);
+    return {
+      ...b,
+      inner: {
+        ...b.inner,
+        parameters: [
+          ...(b.inner.parameters ?? []),
+          ...theirs.map(({ parameter }) => parameter),
+        ],
+      },
+    };
+  });
+  const inner = {
+    ...renameUses(
+      { ...block.inner, blocks: prepared, parameters: [] },
+      renames,
+    ),
+  };
+  inner.blocks = inner.blocks.map((b) => {
+    const theirs = handedTo.get(b.id);
+    return theirs
+      ? {
+          ...b,
+          bindings: {
+            ...b.bindings,
+            ...Object.fromEntries(
+              theirs.map(({ parameter, expression }) => [
+                parameter.name,
+                expression,
+              ]),
+            ),
+          },
+        }
+      : b;
+  });
+
+  const { inputs, outputs } = terminals(inner);
+  const contents = inner.blocks.filter((b) => !isTerminal(b));
   const others = diagram.blocks.filter((b) => b.id !== id);
 
   const renamed = new Map<string, string>();
   const taken = [...others];
-  for (const inner of contents) {
-    const fresh = taken.some((b) => b.id === inner.id)
+  for (const each of contents) {
+    const fresh = taken.some((b) => b.id === each.id)
       ? nextId('b', taken)
-      : inner.id;
-    renamed.set(inner.id, fresh);
-    taken.push({ ...inner, id: fresh });
+      : each.id;
+    renamed.set(each.id, fresh);
+    taken.push({ ...each, id: fresh });
   }
 
   const dx = contents.length
@@ -222,40 +379,65 @@ function ungroup<D extends Diagram>(
 
   const inputIndex = new Map(inputs.map((t, k) => [t.id, k]));
   const outputIndex = new Map(outputs.map((t, j) => [t.id, j]));
-  const feeding = (port: number) =>
-    diagram.wires
-      .filter((w) => w.to.block === id && w.to.port === port)
-      .map((w) => w.from);
-  const fedBy = (port: number) =>
-    diagram.wires
-      .filter((w) => w.from.block === id && w.from.port === port)
-      .map((w) => w.to);
   const outside = (ref: PortRef) => ({
     block: renamed.get(ref.block)!,
     port: ref.port,
   });
 
+  // What feeds input `k` once the subsystem is gone. A wire from one of its
+  // own outputs, around a loop, comes from whatever fed that output inside.
+  const sourcesOf = (k: number, seen: ReadonlySet<number>): PortRef[] =>
+    seen.has(k)
+      ? []
+      : diagram.wires
+          .filter((w) => w.to.block === id && w.to.port === k)
+          .flatMap((w) =>
+            w.from.block !== id
+              ? [w.from]
+              : inner.wires
+                  .filter((v) => outputIndex.get(v.to.block) === w.from.port)
+                  .flatMap((v) => {
+                    const through = inputIndex.get(v.from.block);
+                    return through === undefined
+                      ? [outside(v.from)]
+                      : sourcesOf(through, new Set([...seen, k]));
+                  }),
+          );
+  // What output `j` feeds outside. Wires back into the subsystem itself are
+  // made from the input side.
+  const targetsOf = (j: number): PortRef[] =>
+    diagram.wires
+      .filter(
+        (w) => w.from.block === id && w.from.port === j && w.to.block !== id,
+      )
+      .map((w) => w.to);
+
   const nextWire = idSource('w', diagram.wires);
   const joined: Wire[] = [];
-  for (const wire of block.inner.wires) {
+  const made = new Set<string>();
+  for (const wire of inner.wires) {
     const fromInput = inputIndex.get(wire.from.block);
     const toOutput = outputIndex.get(wire.to.block);
     // Every source a wire inside starts from, and every target it ends at, seen from outside.
     const froms =
       fromInput !== undefined
-        ? feeding(fromInput)
+        ? sourcesOf(fromInput, new Set())
         : renamed.has(wire.from.block)
           ? [outside(wire.from)]
           : [];
     const tos =
       toOutput !== undefined
-        ? fedBy(toOutput)
+        ? targetsOf(toOutput)
         : renamed.has(wire.to.block)
           ? [outside(wire.to)]
           : [];
     for (const from of froms) {
       for (const to of tos) {
-        joined.push({ id: nextWire(), from, to });
+        const key = `${portKey(from)}>${portKey(to)}`;
+        if (!made.has(key)) {
+          made.add(key);
+          joined.push({ id: nextWire(), from, to });
+        }
       }
     }
   }
@@ -264,9 +446,16 @@ function ungroup<D extends Diagram>(
     ...diagram.wires.filter((w) => w.from.block !== id && w.to.block !== id),
     ...joined,
   ];
+  const parameters = [...(diagram.parameters ?? []), ...moved];
   return {
-    diagram: { ...diagram, blocks: [...others, ...placed], wires },
+    diagram: {
+      ...diagram,
+      blocks: [...others, ...placed],
+      wires,
+      ...(parameters.length ? { parameters } : {}),
+    },
     renamed,
+    parameters: kept,
   };
 }
 
@@ -322,13 +511,23 @@ export function ungroupAt(
   id: string,
 ): LabDocument {
   let renamed: ReadonlyMap<string, string> | undefined;
+  let parameters: ReadonlyMap<string, string> = new Map();
+  // The names declared around the diagram it is in.
+  const visible = new Set(
+    path.flatMap(
+      (_, depth) =>
+        diagramAt(doc, path.slice(0, depth))?.parameters?.map((p) => p.name) ??
+        [],
+    ),
+  );
   const next = updateDiagramAt(doc, path, (diagram) => {
-    const result = ungroup(diagram, id);
+    const result = ungroup(diagram, id, visible);
     if (!result) {
       return diagram;
     }
 
     renamed = result.renamed;
+    parameters = result.parameters;
     return result.diagram;
   });
   if (!renamed) {
@@ -336,20 +535,35 @@ export function ungroupAt(
   }
 
   const map = renamed;
-  const inside = `${pathId(path, id)}/`;
-  return moveRefs(doc, next, (full) => {
-    if (full === pathId(path, id)) {
-      return undefined;
-    }
+  const holder = pathId(path, id);
+  const inside = `${holder}/`;
+  return moveRefs(
+    doc,
+    next,
+    (full) => {
+      if (full === holder) {
+        return undefined;
+      }
 
-    if (!full.startsWith(inside)) {
-      return full;
-    }
+      if (!full.startsWith(inside)) {
+        return full;
+      }
 
-    const [first, ...rest] = full.slice(inside.length).split('/');
-    const fresh = map.get(first!);
-    return fresh === undefined
-      ? undefined
-      : pathId(path, [fresh, ...rest].join('/'));
-  });
+      const [first, ...rest] = full.slice(inside.length).split('/');
+      const fresh = map.get(first!);
+      return fresh === undefined
+        ? undefined
+        : pathId(path, [fresh, ...rest].join('/'));
+    },
+    // Its own parameters join the diagram it was in, but those bound from
+    // there are gone, and what set them has nothing left to set.
+    (was, followed) => {
+      if (was.scope.join('/') !== holder) {
+        return followed;
+      }
+
+      const name = parameters.get(was.parameter);
+      return name === undefined ? undefined : { scope: path, parameter: name };
+    },
+  );
 }

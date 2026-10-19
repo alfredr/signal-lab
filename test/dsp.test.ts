@@ -3,10 +3,17 @@ import { describe, test } from 'node:test';
 
 import { Biquads, butterworth, magnitude } from '../src/dsp/biquad.ts';
 import { Fir, hilbertTaps } from '../src/dsp/fir.ts';
-import { downsample, resamplerDelay, upsample } from '../src/dsp/resample.ts';
+import {
+  downsample,
+  Downsampler,
+  Interpolator,
+  resamplerDelay,
+  upsample,
+  Upsampler,
+} from '../src/dsp/resample.ts';
 import { welch } from '../src/dsp/spectrum.ts';
 import { power } from '../src/engine/signal.ts';
-import { circuit, decibels, output, simulator } from './helpers.ts';
+import { circuit, decibels, output, run } from './helpers.ts';
 
 const tone = (frequency: number, rate: number, length: number, phase = 0) =>
   Float32Array.from({ length }, (_, n) =>
@@ -47,7 +54,7 @@ describe('resampling', () => {
     upsample(x, 8, up);
     const back = new Float32Array(x.length);
     downsample(up, 8, back);
-    const delay = (2 * resamplerDelay(8)) / 8;
+    const delay = (resamplerDelay(8, 'up') + resamplerDelay(8, 'down')) / 8;
     const expected = tone(
       1000,
       48000,
@@ -60,6 +67,35 @@ describe('resampling', () => {
     }
 
     assert.ok(worst < 0.01, `worst error ${worst}`);
+  });
+
+  test('works a chunk at a time, the same as all at once', () => {
+    const x = tone(1000, 48000, 4800);
+    const whole = new Float32Array(x.length * 3);
+    upsample(x, 3, whole);
+    const up = new Upsampler(3);
+    const parts: number[] = [];
+    for (let at = 0; at < x.length; at += 701) {
+      const chunk = x.subarray(at, Math.min(x.length, at + 701));
+      const out = new Float32Array(chunk.length * 3);
+      up.process(chunk, out);
+      parts.push(...out);
+    }
+
+    assert.ok(parts.every((v, i) => v === whole[i]));
+
+    const down = new Downsampler(3);
+    const back = new Float32Array(whole.length / 3);
+    downsample(whole, 3, back);
+    const pieces: number[] = [];
+    for (let at = 0; at < whole.length; at += 2103) {
+      const chunk = whole.subarray(at, Math.min(whole.length, at + 2103));
+      const out = new Float32Array(chunk.length / 3);
+      down.process(chunk, out);
+      pieces.push(...out);
+    }
+
+    assert.ok(pieces.every((v, i) => v === back[i]));
   });
 
   test('upsampling leaves no images of the tone', () => {
@@ -103,7 +139,7 @@ describe('spectrum', () => {
 describe('noise source', () => {
   test('its power in the reference bandwidth is the level set', () => {
     // -20 dB in 2.5 kHz is a density of 4e-6 per Hz; over 24 kHz that is 0.096.
-    const result = simulator().run(
+    const result = run(
       circuit(
         4,
         [['n', 'noise', { level: -20, bandwidth: 2500, rate: 48000 }]],
@@ -112,5 +148,50 @@ describe('noise source', () => {
     );
     const measured = power(output(result, 'n').data);
     assert.ok(Math.abs(measured / 0.096 - 1) < 0.02, `power ${measured}`);
+  });
+});
+
+describe('reading a signal at another rate', () => {
+  /**
+   * A tone read out at `out` Hz, as the speaker does, and its level at `at`
+   * Hz.
+   */
+  const readOut = (
+    frequency: number,
+    rate: number,
+    out: number,
+    at: number,
+  ): number => {
+    const reader = new Interpolator();
+    const ratio = rate / out;
+    const reach = reader.reach(ratio);
+    const n = 4800;
+    const samples = Float32Array.from(
+      { length: Math.ceil(n * ratio) + 2 * reach + 2 },
+      (_, i) => Math.sin((2 * Math.PI * frequency * (i - reach)) / rate),
+    );
+    let re = 0;
+    let im = 0;
+    for (let k = 0; k < n; k++) {
+      const v = reader.at(samples, reach + k * ratio, ratio);
+      re += v * Math.cos((2 * Math.PI * at * k) / out);
+      im += v * Math.sin((2 * Math.PI * at * k) / out);
+    }
+
+    return (2 * Math.hypot(re, im)) / n;
+  };
+
+  test('passes what fits below half the new rate', () => {
+    assert.ok(Math.abs(readOut(1000, 48000, 48000, 1000) - 1) < 0.01);
+    assert.ok(Math.abs(readOut(10_000, 384_000, 48000, 10_000) - 1) < 0.01);
+    assert.ok(Math.abs(readOut(1000, 12000, 48000, 1000) - 1) < 0.01);
+  });
+
+  test("doesn't fold what is above it back down", () => {
+    // 100 kHz read at 48 kHz would land on 4 kHz.
+    const alias = readOut(100_000, 384_000, 48000, 4000);
+    assert.ok(alias < 1e-3, `alias at ${alias}`);
+    // Read 8 samples apart, as at 8× speed, 4 kHz would fold to 2 kHz.
+    assert.ok(readOut(4000, 48000, 6000, 2000) < 1e-3);
   });
 });

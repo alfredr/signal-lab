@@ -1,10 +1,12 @@
 // Ties the pieces together: the document history, the simulation worker, and
 // the views that show and edit them. The editor shows one diagram at a time,
 // the top level or the inside of a subsystem, chosen by `path`; the panel face
-// below it shows every instrument in the document. Every change re-renders at
-// once and asks the worker for a new run, which comes back with the statuses,
-// readings and the signals on screen. The playhead runs on animation frames,
-// following the audio while something plays.
+// below it shows every instrument in the document. The worker runs the
+// document as a stream from time 0. While it runs, the playhead moves on with
+// the clock (the audio clock while a speaker plays) and the worker is kept a
+// little ahead of it; everything on screen shows the stream as it stood at the
+// playhead. Every change re-renders at once and goes to the worker, which
+// carries on with it from where it is.
 
 import { blockType, categories } from '../blocks/index.ts';
 import {
@@ -13,13 +15,14 @@ import {
   PLOT,
   READOUT,
   SPEAKER,
+  SYMBOLS,
 } from '../blocks/instruments.ts';
+import { RECORDING } from '../blocks/sources.ts';
 import { visiblePorts, type Reading } from '../engine/block.ts';
 import { portKey, type PortRef } from '../engine/circuit.ts';
 import { errorMessage, errorName } from '../engine/errors.ts';
-import { si } from '../engine/format.ts';
+import { significant } from '../engine/format.ts';
 import type { StoredParams } from '../engine/params.ts';
-import type { Signal } from '../engine/signal.ts';
 import type { BlockStatus } from '../engine/simulator.ts';
 import {
   addBlock,
@@ -27,6 +30,7 @@ import {
   diagramAt,
   duplicate,
   emptyDocument,
+  everyBlock,
   isSubsystem,
   pathId,
   pruneRefs,
@@ -48,6 +52,7 @@ import {
   hasControl,
   plotFrom,
   settables,
+  symbolSources,
 } from '../model/instruments.ts';
 import { template } from '../model/library.ts';
 import {
@@ -56,8 +61,15 @@ import {
   typeOf,
   ungroupAt,
 } from '../model/subsystems.ts';
-import { SimulationClient, type Simulation } from '../sim/client.ts';
-import { Player } from './audio.ts';
+import { StreamClient, type Chunk } from '../sim/client.ts';
+import { Monitor } from './audio.ts';
+import {
+  getClip,
+  packClip,
+  putClip,
+  unpackClip,
+  type SavedClip,
+} from './clips.ts';
 import type { ChangeMode } from './controls.ts';
 import { html, isTyping } from './dom.ts';
 import {
@@ -68,17 +80,30 @@ import {
   type MenuTarget,
   type Selection,
 } from './editor.ts';
-import { Face, type Transport } from './face.ts';
+import {
+  clockTime,
+  Face,
+  speedLabel,
+  type ScopeState,
+  type Transport,
+} from './face.ts';
 import { layoutOf, snap, type Point } from './geometry.ts';
 import { History } from './history.ts';
 import { Inspector } from './inspector.ts';
 import { portLabel } from './labels.ts';
+import { Live } from './live.ts';
 import { showMenu, type MenuItem } from './menu.ts';
 import { paletteEntries, renderPalette, TEMPLATE } from './palette.ts';
 import { addOnce } from './parameters.ts';
-import { inputOf, Widgets } from './widgets.ts';
+import { inputOf, problemAt, Widgets } from './widgets.ts';
 
 const STORAGE_KEY = 'signal-lab:document';
+
+/** How far ahead of the playhead the stream runs, in seconds of real time. */
+const LEAD = 0.3;
+
+/** Milliseconds of the recent past the status line measures over. */
+const WINDOW = 2000;
 
 function byId<T extends HTMLElement = HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -108,14 +133,28 @@ function footprint(block: LabBlock) {
 
 export class App {
   readonly #history: History<LabDocument>;
-  readonly #client = new SimulationClient(
-    (simulation) => this.#accept(simulation),
-    (message) => {
-      this.#summary = `Simulation failed: ${message}`;
+  readonly #client = new StreamClient({
+    status: (statuses) => {
+      this.#statuses = statuses;
+      this.#notice = '';
       this.#render();
     },
-  );
-  readonly #player = new Player();
+    chunk: (chunk) => this.#accept(chunk),
+    history: (samples) => {
+      for (const run of samples) {
+        this.#live.add(run);
+      }
+
+      this.#refresh();
+    },
+    error: (message) => {
+      this.#notice = `Simulation failed: ${message}`;
+      this.#running = false;
+      this.#render();
+    },
+  });
+  readonly #live = new Live();
+  readonly #monitor = new Monitor();
   readonly #widgets: Widgets;
   readonly #editor: DiagramEditor;
   readonly #inspector: Inspector;
@@ -126,24 +165,26 @@ export class App {
   readonly #undo = byId<HTMLButtonElement>('undo');
   readonly #redo = byId<HTMLButtonElement>('redo');
   #statuses: ReadonlyMap<string, BlockStatus> = new Map();
+  /** Every block's readings at the playhead. */
   #readings: ReadonlyMap<string, readonly Reading[]> = new Map();
-  #signals: ReadonlyMap<string, Signal> = new Map();
-  /** What was last sent to the worker, so unchanged renders don't resend it. */
-  #requested:
-    | { readonly doc: LabDocument; readonly wanted: string }
-    | undefined;
-  /** A signal to play as soon as the worker sends it. */
-  #pendingPlay: string | undefined;
-  #slowTimer: ReturnType<typeof setTimeout> | undefined;
   #path: Path = [];
   #selection: Selection = NOTHING;
-  #summary = '';
+  /** Something to say on the status line instead, until the next run or reset. */
+  #notice = '';
   #saveTimer: ReturnType<typeof setTimeout> | undefined;
-  /** The playhead's time in seconds, if it is out. */
-  #time: number | undefined;
-  /** Whether the playhead is moving on its own, without audio. */
+  /** The playhead: the stream time on screen, in seconds. */
+  #time = 0;
   #running = false;
   #speed = 1;
+  /**
+   * Lately, when the worker answered and how many milliseconds it worked for,
+   * and where the playhead was when, to say how busy the one is and how fast
+   * the other really runs.
+   */
+  #work: { readonly at: number; readonly elapsed: number }[] = [];
+  #progress: { readonly at: number; readonly time: number }[] = [];
+  /** Seconds the playhead has been held up waiting for the worker. */
+  #waited = 0;
   #frame = 0;
   #lastFrame = 0;
 
@@ -156,11 +197,11 @@ export class App {
       this.#render();
     };
 
-    const play = (at: PortRef) => this.#play(at);
-    const stop = () => this.#player.stop();
+    const listen = (at: PortRef) => this.#monitor.toggle(portKey(at));
     const addPlot = (at: PortRef) => this.#addPlot(at);
 
-    this.#widgets = new Widgets({ change, play, stop });
+    const press = (id: string) => this.#client.press(id);
+    this.#widgets = new Widgets({ change, listen, press });
     this.#editor = new DiagramEditor(byId('canvas'), {
       change: (next, mode) =>
         this.#change(
@@ -173,6 +214,7 @@ export class App {
         ),
       select,
       open: (id) => this.#open([...this.#path, id]),
+      reveal: (id) => this.#reveal(id),
       add: (key, at) => this.#add(key, at),
       menu: (target, client, at) => this.#menu(target, client, at),
     });
@@ -186,15 +228,15 @@ export class App {
       addControl: (path, target) => this.#addControl(path, target),
       addReadout: (path, block, reading) =>
         this.#addReadout(path, block, reading),
+      press: (id) => this.#client.press(id),
     });
     this.#face = new Face(byId('face'), {
       change,
       reveal: (id) => this.#reveal(id),
       addPlot,
-      play,
-      stop,
+      listen,
       run: () => this.#run(),
-      seek: (time) => this.#seek(time),
+      reset: () => this.#reset(),
       speed: (speed) => {
         this.#speed = speed;
         this.#render();
@@ -208,10 +250,7 @@ export class App {
       this.#render();
       this.#scheduleSave();
     });
-    this.#player.subscribe(() => {
-      this.#render();
-      this.#animate();
-    });
+    this.#monitor.subscribe(() => this.#render());
     this.#bindToolbar();
     addEventListener('keydown', (event) => this.#keydown(event));
 
@@ -251,13 +290,14 @@ export class App {
     const diagram = this.#diagram;
     this.#dropStaleSelection(diagram);
     const bindings = resolveBindings(doc);
+    this.#readings = this.#live.readingsAt(this.#time);
     this.#widgets.update({
       doc,
-      signals: this.#signals,
+      live: this.#live,
       readings: this.#readings,
       status: this.#statuses,
       bindings,
-      playing: this.#player.playing,
+      listening: this.#monitor.listening,
       time: this.#time,
     });
     this.#editor.render({
@@ -269,7 +309,6 @@ export class App {
       readings: this.#readings,
       bound: bindings.values,
       widgets: this.#widgets,
-      time: this.#time,
     });
     this.#face.render({
       doc,
@@ -295,8 +334,54 @@ export class App {
     this.#title.textContent = doc.title;
     this.#undo.disabled = !this.#history.canUndo;
     this.#redo.disabled = !this.#history.canRedo;
-    this.#status.textContent = this.#summary;
-    this.#request(diagram);
+    this.#status.textContent = this.#summary();
+    this.#sync(diagram);
+  }
+
+  /**
+   * How the running stream is doing: the speed, and how much of each second
+   * the simulation spends working, which says how much faster it could go. If
+   * it can't keep up, how fast it really runs instead.
+   */
+  #runningSummary(): string {
+    const now = performance.now();
+    const recent = (at: number) => now - at < WINDOW;
+    this.#work = this.#work.filter((w) => recent(w.at));
+    this.#progress = this.#progress.filter((p) => recent(p.at));
+    const speed = speedLabel(this.#speed);
+    const first = this.#progress[0];
+    const last = this.#progress.at(-1);
+    if (this.#waited > 0.25 && first && last && last.at > first.at) {
+      const real = (last.time - first.time) / ((last.at - first.at) / 1000);
+      return `Can't keep up with ${speed}: running at ${significant(real, 2)}×`;
+    }
+
+    const span = first ? Math.max(500, now - first.at) : 0;
+    if (!span) {
+      return `Running at ${speed}`;
+    }
+
+    const busy = this.#work.reduce((sum, w) => sum + w.elapsed, 0) / span;
+    return `Running at ${speed} · simulation ${Math.min(100, Math.round(100 * busy))}% busy`;
+  }
+
+  /** The status line: how the stream is doing, and any errors. */
+  #summary(): string {
+    if (this.#notice) {
+      return this.#notice;
+    }
+
+    const errors = [...this.#statuses.values()].filter(
+      (s) => s.state === 'error',
+    ).length;
+    const state = this.#running
+      ? this.#runningSummary()
+      : this.#time > 0
+        ? `Paused at ${clockTime(this.#time)}`
+        : 'Press Run to start';
+    return errors
+      ? `${state} · ${errors === 1 ? '1 block has' : `${errors} blocks have`} an error`
+      : state;
   }
 
   #renderCrumbs(): void {
@@ -377,19 +462,37 @@ export class App {
       return undefined;
     }
 
+    return this.#scopeState(at);
+  }
+
+  #scopeState(at: PortRef): ScopeState {
     return {
       at,
       title: portLabel(this.#doc, at),
-      signal: this.#signals.get(portKey(at)),
-      playing: this.#player.playing === portKey(at),
+      trace: this.#live.traces.get(portKey(at)),
+      problem: problemAt(this.#statuses, at),
+      listening: this.#monitor.listening.has(portKey(at)),
     };
   }
 
   /** Port keys whose signals are on screen or playing. */
   #wanted(diagram: Diagram): string[] {
     const doc = this.#doc;
+    const bindings = resolveBindings(doc);
     const keys = new Set(
       faceItems(doc).flatMap((item) => {
+        if (item.block.kind === SYMBOLS) {
+          const sources = symbolSources(doc, item, {
+            status: this.#statuses,
+            bindings,
+          });
+          return 'problem' in sources
+            ? []
+            : [sources.tone, sources.bits, sources.glide?.at].flatMap((at) =>
+                at ? [portKey(at)] : [],
+              );
+        }
+
         const at =
           item.block.kind === PLOT || item.block.kind === SPEAKER
             ? inputOf(doc, item)
@@ -398,119 +501,132 @@ export class App {
       }),
     );
     const scope = this.#scopeTarget(diagram);
-    for (const key of [
-      scope && portKey(scope),
-      this.#player.playing,
-      this.#pendingPlay,
-    ]) {
-      if (key) {
-        keys.add(key);
-      }
+    if (scope) {
+      keys.add(portKey(scope));
+    }
+
+    for (const key of this.#monitor.listening) {
+      keys.add(key);
     }
 
     return [...keys].sort();
   }
 
-  /** Asks the worker for a run if the document or the signals wanted changed. */
-  #request(diagram: Diagram): void {
-    const doc = this.#doc;
+  /** Sends the worker the document and the ports to watch, if they changed. */
+  #sync(diagram: Diagram): void {
     const wanted = this.#wanted(diagram);
-    const signature = wanted.join('\n');
-    if (this.#requested?.doc === doc && this.#requested.wanted === signature) {
-      return;
-    }
+    this.#client.load(this.#doc);
+    this.#client.watch(wanted);
+    this.#live.keep(new Set(wanted));
+    this.#handClips();
+  }
 
-    this.#requested = { doc, wanted: signature };
-    this.#client.request(doc, wanted);
-    // Say so if a run takes long enough to notice.
-    clearTimeout(this.#slowTimer);
-    this.#slowTimer = setTimeout(() => {
-      if (this.#client.busy) {
-        this.#status.textContent = 'Simulating…';
+  /** The ids of the recordings the document plays. */
+  #clipIds(): string[] {
+    return [
+      ...new Set(
+        everyBlock(this.#doc).flatMap(({ block }) =>
+          block.kind === RECORDING && typeof block.params.clip === 'string'
+            ? [block.params.clip]
+            : [],
+        ),
+      ),
+    ].filter(Boolean);
+  }
+
+  /** Hands the worker the recordings the document plays that it lacks. */
+  #handClips(): void {
+    for (const id of this.#clipIds()) {
+      if (!this.#client.hasClip(id)) {
+        void getClip(id).then((clip) => clip && this.#client.clips([clip]));
       }
-    }, 250);
-  }
-
-  #accept(simulation: Simulation): void {
-    this.#statuses = simulation.statuses;
-    this.#readings = simulation.readings;
-    this.#signals = simulation.signals;
-
-    if (simulation.recomputed > 0) {
-      const blocks =
-        simulation.recomputed === 1
-          ? '1 block'
-          : `${simulation.recomputed} blocks`;
-      this.#summary = `Simulated ${si(simulation.doc.duration, 's')} in ${Math.max(1, Math.round(simulation.elapsed))} ms (${blocks})`;
-    }
-
-    this.#summary = this.#summary.replace(/ · .*$/, '');
-
-    if (simulation.errors) {
-      this.#summary += ` · ${simulation.errors === 1 ? '1 block has' : `${simulation.errors} blocks have`} an error`;
-    }
-
-    const playing = this.#player.playing;
-    if (playing) {
-      this.#player.refresh(this.#signals.get(playing));
-    }
-
-    const pending = this.#pendingPlay;
-    const signal = pending ? this.#signals.get(pending) : undefined;
-    if (pending && signal) {
-      this.#pendingPlay = undefined;
-      this.#player.play(pending, signal);
-    }
-
-    this.#render();
-  }
-
-  #play(at: PortRef): void {
-    const key = portKey(at);
-    const signal = this.#signals.get(key);
-    if (signal) {
-      this.#player.play(key, signal);
-    } else {
-      // Not on the page yet: ask the worker for it, and play it when it comes.
-      this.#pendingPlay = key;
-      this.#render();
     }
   }
 
-  // The playhead.
+  #accept(chunk: Chunk): void {
+    for (const run of chunk.samples) {
+      this.#live.add(run);
+    }
+
+    for (const stamped of chunk.readings) {
+      this.#live.stamp(stamped);
+    }
+
+    this.#live.time = chunk.time;
+
+    this.#work.push({ at: performance.now(), elapsed: chunk.elapsed });
+
+    if (!this.#running) {
+      this.#refresh();
+    }
+  }
+
+  // The stream's clock.
 
   #transport(): Transport {
     return {
       time: this.#time,
-      duration: this.#doc.duration,
-      running: this.#running || this.#player.playing !== undefined,
+      running: this.#running,
       speed: this.#speed,
+      behind: this.#waited > 0.25,
     };
   }
 
-  /** Starts or stops the playhead; stopping also stops the sound. */
+  /** Starts or pauses the stream. */
   #run(): void {
-    if (this.#running || this.#player.playing) {
-      this.#running = false;
-      this.#player.stop();
-    } else {
-      this.#running = true;
-      this.#time ??= 0;
+    this.#running = !this.#running;
+    this.#waited = 0;
+    this.#work = [];
+    this.#progress = [];
+
+    if (this.#running) {
+      this.#notice = '';
+      this.#ahead();
       this.#animate();
+    } else {
+      this.#monitor.halt();
     }
 
     this.#render();
   }
 
-  /** Puts the playhead at `time`, or away if undefined. */
-  #seek(time: number | undefined): void {
-    this.#player.stop();
-    this.#running = false;
-    this.#time = time;
+  /** Takes the stream back to time 0, with every block afresh. */
+  #reset(): void {
+    this.#client.reset();
+    this.#live.clear();
+    this.#monitor.halt();
+    this.#time = 0;
+    this.#work = [];
+    this.#progress = [];
+    this.#notice = '';
+
+    if (this.#running) {
+      this.#ahead();
+    }
+
     this.#render();
   }
 
-  /** Keeps the playhead moving, one animation frame at a time. */
+  /** Keeps the worker a little ahead of the playhead. */
+  #ahead(): void {
+    const until = this.#time + LEAD * Math.max(1, this.#speed);
+    if (this.#live.time < until - 1e-3) {
+      this.#client.advance(until);
+    }
+  }
+
+  /** Shows the stream as it stood at the playhead, without a full render. */
+  #refresh(): void {
+    this.#readings = this.#live.readingsAt(this.#time);
+    this.#widgets.setTime(this.#time, this.#readings);
+    this.#editor.setReadings(this.#readings);
+    this.#inspector.setReadings(this.#readings);
+    const scope = this.#faceScope(this.#diagram);
+    this.#face.tick(this.#transport(), scope);
+    this.#status.textContent = this.#summary();
+  }
+
+  /** Moves the playhead on, one animation frame at a time, while running. */
   #animate(): void {
     if (this.#frame) {
       return;
@@ -520,22 +636,29 @@ export class App {
 
     const tick = (now: number) => {
       this.#frame = 0;
-      const position = this.#player.position();
-      const elapsed = Math.min(0.1, (now - this.#lastFrame) / 1000);
-      this.#lastFrame = now;
 
-      if (position !== undefined) {
-        this.#time = position;
-      } else if (this.#running) {
-        const duration = this.#doc.duration;
-        this.#time = ((this.#time ?? 0) + elapsed * this.#speed) % duration;
-      } else {
+      if (!this.#running) {
         return;
       }
 
-      this.#widgets.setTime(this.#time);
-      this.#editor.setTime(this.#time);
-      this.#face.setTransport(this.#transport());
+      const elapsed = Math.min(0.1, (now - this.#lastFrame) / 1000);
+      this.#lastFrame = now;
+      // While sound plays, the audio clock keeps time.
+      const clock = this.#monitor.clock();
+      const wanted = clock ?? this.#time + elapsed * this.#speed;
+      const short = wanted > this.#live.time + 0.05;
+      this.#waited = short ? this.#waited + elapsed : 0;
+
+      if (clock !== undefined && short) {
+        // The sound has run out: start it again from where the stream is.
+        this.#monitor.halt();
+      }
+
+      this.#time = Math.max(this.#time, Math.min(wanted, this.#live.time));
+      this.#progress.push({ at: now, time: this.#time });
+      this.#ahead();
+      this.#monitor.feed(this.#live.traces, this.#time, true, this.#speed);
+      this.#refresh();
       this.#frame = requestAnimationFrame(tick);
     };
 
@@ -723,7 +846,7 @@ export class App {
 
     let copies: string[] = [];
     const next = updateDiagramAt(this.#doc, this.#path, (d) => {
-      const [result, made] = duplicate(d, new Set(ids));
+      const [result, made] = duplicate(d, new Set(ids), 24, 24, this.#path);
       copies = made;
       return result;
     });
@@ -740,10 +863,9 @@ export class App {
 
   #toggleListen(ref: PortRef): MenuItem {
     const key = portKey(ref);
-    const playing = this.#player.playing === key;
     return {
-      label: playing ? 'Stop listening' : 'Listen',
-      run: () => (playing ? this.#player.stop() : this.#play(ref)),
+      label: this.#monitor.listening.has(key) ? 'Stop listening' : 'Listen',
+      run: () => this.#monitor.toggle(key),
     };
   }
 
@@ -934,10 +1056,10 @@ export class App {
           this.#addControl(path, target),
         ),
       );
-    const readouts = (this.#readings.get(pathId(path, block.id)) ?? []).map(
+    const readouts = (typeOf(block)?.reports ?? []).map(
       (reading): MenuItem => ({
-        label: reading.label,
-        run: () => this.#addReadout(path, block.id, reading.label),
+        label: reading,
+        run: () => this.#addReadout(path, block.id, reading),
       }),
     );
     showMenu(
@@ -1020,10 +1142,10 @@ export class App {
   #load(doc: LabDocument): void {
     this.#path = [];
     this.#selection = NOTHING;
-    this.#player.stop();
+    this.#monitor.clear();
     this.#running = false;
-    this.#time = undefined;
     this.#history.commit(doc);
+    this.#reset();
     requestAnimationFrame(() => this.#editor.fit());
   }
 
@@ -1080,7 +1202,7 @@ export class App {
       event.preventDefault();
       this.#deleteSelection();
     } else if (event.key === ' ' && !command) {
-      // Space starts and stops the playhead, as in audio editors.
+      // Space starts and pauses the stream, as in audio editors.
       if ((event.target as Element | null)?.closest?.('button, [data-live]')) {
         return;
       }
@@ -1126,8 +1248,20 @@ export class App {
     this.#redo.addEventListener('click', () => this.#history.redo());
     byId('fit').addEventListener('click', () => this.#editor.fit());
 
-    byId('export').addEventListener('click', () => {
-      const blob = new Blob([JSON.stringify(this.#doc, null, 2)], {
+    byId('export').addEventListener('click', async () => {
+      // The recordings it plays go in the file too, so it keeps its sound.
+      const clips: Record<string, SavedClip> = {};
+      for (const id of this.#clipIds()) {
+        const clip = await getClip(id);
+        if (clip) {
+          clips[id] = packClip(clip);
+        }
+      }
+
+      const saved = Object.keys(clips).length
+        ? { ...this.#doc, clips }
+        : this.#doc;
+      const blob = new Blob([JSON.stringify(saved, null, 2)], {
         type: 'application/json',
       });
       const url = URL.createObjectURL(blob);
@@ -1150,9 +1284,21 @@ export class App {
       }
 
       try {
-        this.#load(readDocument(JSON.parse(await chosen.text())));
+        const value: unknown = JSON.parse(await chosen.text());
+        const doc = readDocument(value);
+        const clips = (value as { clips?: unknown }).clips;
+        if (typeof clips === 'object' && clips !== null) {
+          for (const [id, saved] of Object.entries(clips)) {
+            const clip = unpackClip(id, saved);
+            if (clip) {
+              await putClip(clip);
+            }
+          }
+        }
+
+        this.#load(doc);
       } catch (error) {
-        this.#summary =
+        this.#notice =
           errorName(error) === 'SyntaxError'
             ? "That file isn't valid JSON."
             : errorMessage(error);
