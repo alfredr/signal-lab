@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "Sketch block diagrams of radios and other signal chains, simulate them, and plot or listen anywhere along the way.",
+  "license": "MIT",
+  "author": "Alfred Rossi",
+  "homepage": "https://www.alfredrossi.com/gadgets/signal-lab/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alfredr/signal-lab.git"
+  },
+  "bugs": {
+    "url": "https://github.com/alfredr/signal-lab/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "node scripts/dev.ts",
