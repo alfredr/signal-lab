@@ -8,6 +8,7 @@
 import { CONTROL, NOTE, BUTTON, READOUT } from '../blocks/instruments.ts';
 import {
   blockAt,
+  MOST_CELLS,
   pathId,
   type LabDocument,
   type PaneItem,
@@ -137,16 +138,30 @@ export function facePanels(doc: LabDocument): FacePanel[] {
     : [{ id: unique('panel', taken), title: '', panes: made }];
 }
 
-/** The face as it shows, as the document would keep it. */
+/**
+ * The face as it shows, as the document would keep it. A pane of the
+ * document's own keeps the instruments in it that the face leaves out for now,
+ * such as a note taken off the face or a plot stacked under a view, with their
+ * sizes, so arranging the rest doesn't lose them.
+ */
 function organized(doc: LabDocument): Panel[] {
+  const own = new Map(
+    (doc.panels ?? []).flatMap((p) => p.panes).map((q) => [q.id, q.items]),
+  );
+  const listed = new Set<string>();
   return facePanels(doc).map((panel) => ({
     id: panel.id,
     title: panel.title,
-    panes: panel.panes.map((pane) => ({
-      id: pane.id,
-      title: pane.title,
-      items: pane.entries.map(({ item: _, ...entry }) => entry),
-    })),
+    panes: panel.panes.map((pane) => {
+      const items = (
+        own.get(pane.id) ?? pane.entries.map(({ item: _, ...entry }) => entry)
+      ).filter((entry) => blockAt(doc, entry.id) && !listed.has(entry.id));
+      for (const entry of items) {
+        listed.add(entry.id);
+      }
+
+      return { id: pane.id, title: pane.title, items };
+    }),
   }));
 }
 
@@ -158,8 +173,8 @@ const ids = (panels: readonly Panel[]) =>
   new Set(panels.flatMap((p) => [p.id, ...p.panes.map((q) => q.id)]));
 
 /**
- * Moves an instrument to `index` among the instruments of the pane `to`,
- * counted without it.
+ * Moves an instrument to `index` among the instruments the pane `to` shows,
+ * counted without it; those it doesn't show keep their places.
  */
 export function moveInstrument(
   doc: LabDocument,
@@ -176,15 +191,21 @@ export function moveInstrument(
     return doc;
   }
 
+  const shown = new Set(faceCards(doc).map((item) => item.id));
   return withPanels(
     doc,
     panels.map((panel) => ({
       ...panel,
       panes: panel.panes.map((pane) => {
         const items = pane.items.filter((item) => item.id !== id);
-        return pane.id === to
-          ? { ...pane, items: items.toSpliced(index, 0, entry) }
-          : { ...pane, items };
+        if (pane.id !== to) {
+          return { ...pane, items };
+        }
+
+        // Before the one shown at `index`, or after them all.
+        const next = items.filter((item) => shown.has(item.id))[index];
+        const at = next ? items.indexOf(next) : items.length;
+        return { ...pane, items: items.toSpliced(at, 0, entry) };
       }),
     })),
   );
@@ -342,6 +363,9 @@ export function removePanel(doc: LabDocument, id: string): LabDocument {
   );
 }
 
+/** A size in whole grid cells, within what a document keeps. */
+const cells = (n: number) => Math.min(MOST_CELLS, Math.max(1, Math.round(n)));
+
 /** Gives an instrument a size in grid cells, or with none, its own size back. */
 export function resizeInstrument(
   doc: LabDocument,
@@ -355,7 +379,9 @@ export function resizeInstrument(
       panes: panel.panes.map((pane) => ({
         ...pane,
         items: pane.items.map((item) =>
-          item.id === id ? { id, ...(size ?? {}) } : item,
+          item.id === id
+            ? { id, ...(size ? { w: cells(size.w), h: cells(size.h) } : {}) }
+            : item,
         ),
       })),
     })),
@@ -667,7 +693,9 @@ export function layoutPane(
 
   // Controls beside the screens, as many to a row as each width allows.
   if (screens.length && controls.length) {
-    const narrowest = Math.max(...of(screens).map((p) => p.w)) * 0.75;
+    // Beside controls, a screen keeps at least its own width; squeezed
+    // narrower, as on a phone, the controls go under it instead.
+    const narrowest = Math.max(...of(screens).map((p) => p.w));
     let across = -GAP;
     const tried = new Set<number>();
     for (const i of controls) {

@@ -99,17 +99,27 @@ export function themeButton(): HTMLButtonElement {
 }
 
 /**
- * Calls `redraw` whenever the colors change, for as long as `element` is on
- * the page.
+ * What to call when the colors change, held weakly: a canvas keeps its own
+ * redraw, and when the canvas is gone and collected, so is its entry. One
+ * taken off the page for a while, as a panel behind a tab is, stays listed.
  */
-export function onThemeChange(element: Element, redraw: () => void): void {
-  const listener = () => {
-    if (element.isConnected) {
+const redraws = new Set<WeakRef<() => void>>();
+
+addEventListener(CHANGE, () => {
+  for (const ref of redraws) {
+    const redraw = ref.deref();
+    if (redraw) {
       redraw();
     } else {
-      removeEventListener(CHANGE, listener);
+      redraws.delete(ref);
     }
-  };
+  }
+});
 
-  addEventListener(CHANGE, listener);
+/**
+ * Calls `redraw` whenever the colors change, for as long as whoever passed it
+ * keeps a hold of it.
+ */
+export function onThemeChange(redraw: () => void): void {
+  redraws.add(new WeakRef(redraw));
 }

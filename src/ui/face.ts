@@ -216,6 +216,8 @@ type Drag =
       readonly y: number;
       readonly w: number;
       readonly h: number;
+      /** The document before, to go back to if the resize is called off. */
+      readonly before: LabDocument;
     };
 
 const SCOPE = '@scope';
@@ -894,6 +896,11 @@ export class Face {
     if (id !== SCOPE) {
       this.#dragFrom(grip, () => ({ kind: 'instrument', id, element }));
       resize.addEventListener('pointerdown', (event) => {
+        const before = this.#model?.doc;
+        if (!before) {
+          return;
+        }
+
         event.preventDefault();
         event.stopPropagation();
         resize.setPointerCapture(event.pointerId);
@@ -904,6 +911,7 @@ export class Face {
           y: event.clientY,
           w: Number(element.dataset.w),
           h: Number(element.dataset.h),
+          before,
         };
       });
       resize.addEventListener('pointermove', (event) => {
@@ -923,15 +931,8 @@ export class Face {
         this.#change((doc) => resizeInstrument(doc, id, { w, h }), 'preview');
       });
 
-      const settle = () => {
-        if (this.#drag?.kind === 'resize') {
-          this.#drag = undefined;
-          this.#change((doc) => doc, 'commit');
-        }
-      };
-
-      resize.addEventListener('pointerup', settle);
-      resize.addEventListener('pointercancel', settle);
+      resize.addEventListener('pointerup', () => this.#endDrag(true));
+      resize.addEventListener('pointercancel', () => this.#endDrag(false));
       resize.addEventListener('dblclick', () =>
         this.#change((doc) => resizeInstrument(doc, id, undefined), 'commit'),
       );
@@ -1059,7 +1060,14 @@ export class Face {
     this.#drag = undefined;
     this.#dropBar.hidden = true;
 
-    if (!drag || drag.kind === 'resize') {
+    if (!drag) {
+      return;
+    }
+
+    // A resize shows as it goes; letting go keeps it as one step to undo,
+    // and Escape puts back what was there, leaving nothing to undo.
+    if (drag.kind === 'resize') {
+      this.#change((doc) => (drop ? doc : drag.before), 'commit');
       return;
     }
 

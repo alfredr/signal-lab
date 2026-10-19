@@ -299,7 +299,7 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 /* The palette: tiles with a drawing of each block, in categories that fold
    away, under a filter that stays put. */
 .palette-search { position: sticky; top: 0; z-index: 1; margin: 0 -12px 4px; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--rule); }
-input.palette-filter { width: 100%; padding: 5px 8px; font: 500 12px/1.2 var(--font-mono); }
+input.palette-filter { width: 100%; padding: 5px 8px; font: 500 12px/1.2 var(--font-mono); appearance: none; -webkit-appearance: none; }
 button.palette-heading { display: flex; align-items: center; gap: 7px; width: 100%; margin: 0; padding: 7px 2px; background: none; border: 0; border-radius: 4px; text-align: left; cursor: pointer; }
 button.palette-heading:hover:not(:disabled) { color: var(--ink); }
 button.palette-heading::before { content: ""; flex: none; border-left: 4.5px solid currentColor; border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent; transform: rotate(90deg); transition: transform 0.12s; }
@@ -852,10 +852,28 @@ button.push:active, button.push.pressed {
     grid-template-areas: "center" "blocks" "inspector";
   }
   .workspace .center, .workspace.panel-right .center { grid-template-columns: minmax(0, 1fr); grid-template-rows: 62vh auto; grid-template-areas: "canvas" "face"; }
-  .workspace.no-panel .center { grid-template-rows: 62vh; grid-template-areas: "canvas"; }
-  .workspace.panel-max .center { grid-template-rows: auto; grid-template-areas: "face"; }
   .workspace.panel-right .face { border-left: 0; border-top: 1px solid var(--rule); }
   .sash { display: none; }
+  /* Everything stacks here, so there is nothing to dock, resize or toggle. */
+  .layout-toggles, .topbar .divider, .face button.icon-button, .area-close { display: none; }
+  /* Whatever a wider screen closed or maximized, here everything shows. */
+  .workspace.no-blocks .area-blocks, .workspace.no-inspector .area-inspector { display: flex; }
+  .workspace.no-panel .face { display: block; }
+  .workspace.panel-max .canvas { display: block; }
+  .workspace.no-panel .center, .workspace.panel-max .center { grid-template-rows: 62vh auto; grid-template-areas: "canvas" "face"; }
+  .topbar { gap: 8px 12px; padding: 8px 52px 8px 12px; }
+  /* The colors' switch goes up in the corner, beside the name. */
+  .layout-toggles + .layout-toggle { position: absolute; top: 8px; right: 12px; margin: 0; border-left: 0; }
   .area-blocks, .area-inspector { border: 0; border-top: 1px solid var(--rule); }
   .face { overflow: auto; }
+}
+
+/* On a touch screen, fields take text at 16px: iOS zooms the page in on any
+   smaller one when it is tapped. A knob's value only takes typing after a
+   double-click, so it stays small until then. */
+@media (pointer: coarse) {
+  input, select, textarea, input.palette-filter { font-size: 16px; }
+  input.knob-value, .face-body input.knob-value { font-size: 10px; }
+  .face-body input.knob-value.long { font-size: 9px; }
+  .knob-control.typing input.knob-value, .face-body .knob-control.typing input.knob-value { font-size: 16px; }
 }

@@ -190,6 +190,75 @@ describe('panels and panes', () => {
   });
 });
 
+describe('arranging, with instruments off the face', () => {
+  /** The AM example with a note on the face, in the Detector pane, sized. */
+  const withNote = (shown: boolean): LabDocument => {
+    const doc = am();
+    return {
+      ...doc,
+      blocks: [
+        ...doc.blocks,
+        {
+          id: 'tip',
+          kind: 'note',
+          x: 0,
+          y: 0,
+          params: { text: 'Turn RC up.', face: shown },
+        },
+      ],
+      panels: doc.panels!.map((panel) => ({
+        ...panel,
+        panes: panel.panes.map((pane) =>
+          pane.id === 'pane3'
+            ? { ...pane, items: [{ id: 'tip', w: 7, h: 3 }, ...pane.items] }
+            : pane,
+        ),
+      })),
+    };
+  };
+
+  const show = (doc: LabDocument, face: boolean): LabDocument => ({
+    ...doc,
+    blocks: doc.blocks.map((b) =>
+      b.id === 'tip' ? { ...b, params: { ...b.params, face } } : b,
+    ),
+  });
+  const entryOf = (doc: LabDocument, id: string) =>
+    facePanels(doc)
+      .flatMap((p) => p.panes)
+      .flatMap((q) => q.entries.map((e) => ({ pane: q.id, ...e })))
+      .find((e) => e.id === id);
+
+  test('a note taken off the face keeps its pane and size through arranging the rest', () => {
+    let doc = withNote(false);
+    doc = retitle(doc, 'pane3', 'Receiver');
+    doc = moveInstrument(doc, 'rcKnob', 'pane2', 0);
+    doc = resizeInstrument(doc, 'audioOut', { w: 9, h: 5 });
+    const back = entryOf(show(doc, true), 'tip');
+    assert.equal(back?.pane, 'pane3');
+    assert.deepEqual([back?.w, back?.h], [7, 3]);
+  });
+
+  test('an instrument dropped among shown ones lands there, the hidden ones keeping their places', () => {
+    // pane3 holds tip (hidden), rcKnob, audioOut, speaker; drop cnKnob before audioOut.
+    const doc = moveInstrument(withNote(false), 'cnKnob', 'pane3', 1);
+    const pane = doc
+      .panels!.flatMap((p) => p.panes)
+      .find((q) => q.id === 'pane3')!;
+    assert.deepEqual(
+      pane.items.map((i) => i.id),
+      ['tip', 'rcKnob', 'cnKnob', 'audioOut', 'speaker'],
+    );
+  });
+
+  test('a size is kept within what a saved document holds, and survives saving', () => {
+    const doc = resizeInstrument(am(), 'onAir', { w: 41, h: 0 });
+    const loaded = readDocument(JSON.parse(JSON.stringify(doc)));
+    const entry = entryOf(loaded, 'onAir');
+    assert.deepEqual([entry?.w, entry?.h], [40, 1]);
+  });
+});
+
 describe('laying out a pane', () => {
   const knob = { kind: 'knob', w: 112, h: 112 } as const;
   const screen = { kind: 'screen', w: 312, h: 192 } as const;

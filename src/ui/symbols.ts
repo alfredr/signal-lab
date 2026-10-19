@@ -152,6 +152,9 @@ export class SymbolView {
   readonly #peaks = new Map<string, Held>();
   #shown = '';
 
+  /** Drawn again when the colors change; theme.ts holds it only weakly. */
+  readonly #redraw = () => this.#schedule();
+
   constructor() {
     this.element = html(
       'div',
@@ -160,7 +163,7 @@ export class SymbolView {
       this.#empty,
     );
     new ResizeObserver(() => this.#schedule()).observe(this.#canvas);
-    onThemeChange(this.element, () => this.#schedule());
+    onThemeChange(this.#redraw);
   }
 
   update(state: SymbolViewState): void {

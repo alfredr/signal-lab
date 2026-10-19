@@ -186,6 +186,9 @@ export class Screen {
   #hover: { x: number; y: number } | undefined;
   #frame = 0;
 
+  /** Drawn again when the colors change; theme.ts holds it only weakly. */
+  readonly #redraw = () => this.#schedule();
+
   constructor({ interactive }: { readonly interactive: boolean }) {
     this.#interactive = interactive;
     this.element = html(
@@ -200,7 +203,7 @@ export class Screen {
     }
 
     new ResizeObserver(() => this.#schedule()).observe(this.#canvas);
-    onThemeChange(this.element, () => this.#schedule());
+    onThemeChange(this.#redraw);
   }
 
   update(state: ScreenState): void {
