@@ -12,8 +12,8 @@
   --ink: #15201c;
   --muted: #56655f;
   --rule: #cfd9d4;
-  --grid: #e1e8e4;
-  --grid-dot: #c9d4cf;
+  --grid: #d6dfda;
+  --grid-dot: #a3b2ab;
   --wire: #7d8c86;
   --port: #56655f;
   --accent: #1d6e8a;
@@ -30,6 +30,7 @@
      rims, lights in cyan, and screens set into the modules. */
   --panel: #d5dcd8;
   --strip: #c8d0cc;
+  --housing: #c6cfca;
   --module: #f5f7f6;
   --module-low: #e5eae7;
   --module-edge: #bcc6c1;
@@ -50,7 +51,7 @@
   --screen-ink: #15201c;
   --screen-muted: #5d6c66;
   --screen-rule: #c9d4cf;
-  --screen-grid: #e7ecea;
+  --screen-grid: #dbe3df;
   --screen-trace: #1b88ad;
   --font-display: "Archivo", "Arial Narrow", system-ui, sans-serif;
   --font-body: "Source Serif 4", Georgia, "Times New Roman", serif;
@@ -81,6 +82,7 @@
     --sync-soft: #2a2317;
     --panel: #090c0b;
     --strip: #050706;
+    --housing: #0e1311;
     --module: #1a201e;
     --module-low: #141917;
     --module-edge: #27302c;
@@ -129,6 +131,7 @@
   --sync-soft: #2a2317;
   --panel: #090c0b;
   --strip: #050706;
+  --housing: #0e1311;
   --module: #1a201e;
   --module-low: #141917;
   --module-edge: #27302c;
@@ -209,6 +212,11 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .layout-icon { width: 16px; height: 16px; }
 .layout-icon rect { fill: none; stroke: currentColor; stroke-width: 1.2; }
 .layout-toggle[aria-pressed="true"] .layout-icon .part { fill: currentColor; }
+/* The colors: the system's, light or dark. */
+.theme-icon { width: 16px; height: 16px; }
+.theme-icon circle, .theme-icon path { fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; }
+.theme-icon .fill { fill: currentColor; stroke: none; }
+.layout-toggles + .layout-toggle { margin-left: 6px; padding-left: 0; border-left: 1px solid var(--rule); border-radius: 0 6px 6px 0; }
 
 /* The status line along the bottom. */
 .statusbar { display: flex; align-items: center; min-width: 0; height: 24px; padding: 0 12px; border-top: 1px solid var(--rule); background: var(--surface); }
@@ -219,7 +227,7 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
    narrower by the edge it shares with the middle. */
 
 .workspace {
-  --blocks-column: var(--blocks-width, 168px);
+  --blocks-column: var(--blocks-width, 208px);
   --inspector-column: var(--inspector-width, 300px);
   --panel-track: var(--panel-size, 380px);
   display: grid;
@@ -236,7 +244,7 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .area-head { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; height: 32px; padding: 0 4px 0 12px; border-bottom: 1px solid var(--rule); }
 .area-title { margin: 0; font: 600 11px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
 .area-close { padding: 0 7px; border-color: transparent; background: none; font: 400 17px/22px var(--font-mono); color: var(--muted); }
-.palette { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px 12px; }
+.palette { flex: 1; min-height: 0; overflow: auto; padding: 0 12px 12px; }
 .inspector { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
 
 .center {
@@ -280,7 +288,7 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 
 /* Palette */
 
-.palette-group + .palette-group { margin-top: 14px; }
+.palette-group + .palette-group { margin-top: 2px; }
 .palette-heading, .kicker, .control-label {
   margin: 0 0 6px;
   font: 600 11px/1.2 var(--font-mono);
@@ -288,13 +296,25 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
   text-transform: uppercase;
   color: var(--muted);
 }
+/* The palette: tiles with a drawing of each block, in categories that fold
+   away, under a filter that stays put. */
+.palette-search { position: sticky; top: 0; z-index: 1; margin: 0 -12px 4px; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--rule); }
+input.palette-filter { width: 100%; padding: 5px 8px; font: 500 12px/1.2 var(--font-mono); }
+button.palette-heading { display: flex; align-items: center; gap: 7px; width: 100%; margin: 0; padding: 7px 2px; background: none; border: 0; border-radius: 4px; text-align: left; cursor: pointer; }
+button.palette-heading:hover:not(:disabled) { color: var(--ink); }
+button.palette-heading::before { content: ""; flex: none; border-left: 4.5px solid currentColor; border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent; transform: rotate(90deg); transition: transform 0.12s; }
+.palette-group.folded button.palette-heading::before { transform: none; }
+.palette-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 4px; padding-bottom: 8px; }
+.palette-group.folded .palette-grid { display: none; }
+.palette.filtering .palette-group.folded .palette-grid { display: grid; }
 .palette-item {
-  display: block;
-  width: 100%;
-  margin-bottom: 4px;
-  text-align: left;
-  cursor: grab;
+  display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 0; min-height: 66px; padding: 9px 4px 7px;
+  text-align: center; cursor: grab; border-radius: 6px;
 }
+.palette-label { font: 500 10.5px/1.2 var(--font-mono); overflow-wrap: break-word; }
+.block-icon { flex: none; width: 24px; height: 24px; }
+.block-icon path, .block-icon circle, .block-icon rect { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.block-icon .dashed { stroke-dasharray: 2.5 2; }
 /* Library subsystems: built from other blocks, which you can open up. */
 .palette-item.composite { border-style: dashed; }
 
@@ -316,6 +336,15 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .block .title { font: 700 13px var(--font-display); }
 .block .summary { font: 400 11px var(--font-mono); fill: var(--muted); }
 .block .summary.inside { fill: var(--ink); }
+/* The palette's drawing of a block, small and quiet over its name. */
+.block .block-icon { color: var(--muted); overflow: visible; }
+.block .block-icon path, .block .block-icon circle, .block .block-icon rect { stroke-width: 2; }
+/* A block drawn as a schematic symbol: the drawing is its face, and its name
+   above reads as the name of anything else on the diagram. */
+.block.shape-symbol .block-icon { color: var(--ink); }
+.block.shape-symbol .block-icon path, .block.shape-symbol .block-icon circle, .block.shape-symbol .block-icon rect { stroke-width: 1.6; }
+.block.shape-symbol .label { fill: var(--ink); }
+.block .symbol-lead { fill: none; stroke: var(--wire); stroke-width: 1.5; }
 .block .symbol { font: 400 22px var(--font-mono); }
 .block .label { font: 600 11px var(--font-mono); fill: var(--muted); }
 .block .port-name { font: 500 10px var(--font-mono); fill: var(--muted); }
@@ -647,18 +676,56 @@ input.knob-value.long { font-size: 9px; letter-spacing: -0.04em; }
 .face button.play::before, .face button.run::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--led-off); box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.35); }
 .face button.play[aria-pressed="true"]::before, .face button.run[aria-pressed="true"]::before { background: var(--lit); box-shadow: 0 0 6px 1px var(--lit-glow); }
 
-.face-grid { position: relative; display: grid; grid-template-columns: repeat(auto-fill, 32px); grid-auto-columns: 32px; grid-auto-rows: 32px; gap: 8px; }
-.face-grid.arranging { background-image: radial-gradient(var(--module-edge) 1.5px, transparent 1.5px); background-size: 40px 40px; background-position: 16px 16px; }
-.face-item { position: relative; display: flex; min-width: 0; min-height: 0; }
-/* Each instrument is a module: a raised plate with a soft edge. */
-.face-body {
-  display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; padding: 6px 8px; overflow: hidden;
+/* Panels hold panes and panes hold instruments. A panel is a housing, a pane
+   a raised plate, and the instruments sit on the plate. Panes wrap to fit
+   their panel, and panels stack, tile or take turns as tabs. */
+.face-panels { position: relative; display: flex; flex-direction: column; gap: 14px; }
+.face-panels[data-mode="tile"] { flex-direction: row; flex-wrap: wrap; align-items: stretch; }
+.face-panels[data-mode="tile"] > .face-panel { flex-shrink: 1; }
+.face-panels[data-mode="tile"] > .scope-pane { flex-grow: 0; }
+.face-panel { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 6px; background: var(--housing); border: 1px solid var(--module-edge); border-radius: 8px; box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.12); }
+.panel-head, .pane-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+/* A pane with nothing to say in its head, out of arranging, has none. */
+.face-panels:not(.arranging) .pane-head:has(> .pane-title[hidden]) { display: none; }
+.panel-head { height: 24px; padding: 0 4px; }
+.panel-title, .pane-title { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 700 10px/1.2 var(--font-display); font-stretch: 112%; letter-spacing: 0.18em; text-transform: uppercase; color: var(--silk); }
+.panel-title { letter-spacing: 0.24em; }
+.panel-panes { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
+.pane {
+  display: flex; flex-direction: column; flex: 1 1 auto; gap: 8px; min-width: 0; padding: 8px 10px 10px;
   background: linear-gradient(var(--module), var(--module-low)); border: 1px solid var(--module-edge); border-radius: 6px;
   box-shadow: inset 0 1px 0 var(--module-shine), 0 1px 3px rgba(0, 0, 0, 0.14);
 }
+.pane-head { height: 18px; }
+/* A pane's instruments, each placed where the pane's layout puts it. */
+.pane-grid { position: relative; flex: 1 1 auto; min-width: 0; }
+.pane-grid > .face-item { position: absolute; }
+.scope-pane { border-style: dashed; }
+.face-item { display: flex; min-width: 0; min-height: 0; }
+/* An instrument sits on its pane, with no plate of its own. */
+.face-body { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border-radius: 4px; }
 .face-body > * { flex: 1; min-height: 0; }
-.face-item.selected .face-body { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 1px 3px rgba(0, 0, 0, 0.14); }
-.face-item.scope .face-body { border-style: dashed; }
+.face-item.selected .face-body { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* The tabs, one to a panel. */
+.face-tabs { display: flex; gap: 2px; margin: -4px 0 8px; overflow-x: auto; border-bottom: 1px solid var(--module-edge); }
+.face button.face-tab { padding: 6px 12px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; box-shadow: none; font: 600 10px/1.2 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--silk); white-space: nowrap; }
+.face button.face-tab:hover:not(:disabled) { color: var(--ink); }
+.face button.face-tab[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--lit); }
+.face-modes { display: flex; gap: 2px; }
+
+/* Arranging: grips to drag instruments, panes and panels by, names to edit,
+   and a bar where what is dragged would land. */
+.panel-name, .pane-name, .panel-tools, .face-panel .grip, .pane .grip, .pane-head .small { display: none; }
+.face-panels.arranging .panel-title, .face-panels.arranging .pane-title { display: none; }
+.face-panels.arranging .panel-name, .face-panels.arranging .pane-name { display: block; flex: 1; min-width: 0; padding: 2px 6px; font: 600 11px/1.2 var(--font-mono); background: var(--module); }
+.face-panels.arranging .panel-tools { display: flex; gap: 4px; }
+.face-panels.arranging .pane-head .small { display: grid; place-items: center; width: 22px; height: 20px; padding: 0; }
+.face-panels.arranging .grip { display: block; flex: none; width: 10px; height: 16px; cursor: grab; touch-action: none; background: radial-gradient(var(--silk) 1px, transparent 1.3px) 0 0 / 5px 5px; opacity: 0.7; }
+.face-panels.arranging .pane.empty .pane-grid { min-height: 72px !important; border: 1px dashed var(--module-edge); border-radius: 4px; }
+.face-panels.arranging .dragging { opacity: 0.45; }
+.drop-bar { position: absolute; z-index: 4; pointer-events: none; background: var(--lit); border-radius: 2px; box-shadow: 0 0 6px var(--lit-glow); }
+.face-panels > .small { align-self: flex-start; }
 .face-body .control-label { font: 600 10px/1.2 var(--font-mono); letter-spacing: 0.12em; color: var(--silk); }
 .face-body .widget-value { color: var(--ink); }
 .face-body .widget-note { color: var(--silk); }
@@ -686,6 +753,22 @@ input.knob-value.long { font-size: 9px; letter-spacing: -0.04em; }
 .signal-meta { flex: 1; min-width: 0; text-align: right; font: 500 10px/1.3 var(--font-mono); color: var(--screen-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .face-body .widget-symbols { gap: 6px; }
 .face-body .widget-readout { gap: 4px; }
+/* Readouts, fields and buttons sit in the middle of their row, a button with
+   room above it for a label, so their displays and caps line up; a button is
+   as tall as an LCD. */
+.face-body .widget-readout, .face-body .widget-control, .face-body .widget-button { align-content: center; }
+.face-body .widget-button::before { content: ""; height: 16px; }
+.face-body button.push { min-height: 34px; height: 34px; padding: 0 18px; border-radius: 5px; }
+/* A knob with room to spare grows, its value and range with it. */
+.face-body .knob { width: var(--knob-size, 60px); height: var(--knob-size, 60px); }
+.face-body input.knob-value { width: calc(var(--knob-size, 60px) * 0.78); font-size: calc(var(--knob-size, 60px) / 6); }
+.face-body input.knob-value.long { font-size: calc(var(--knob-size, 60px) / 6.7); }
+.face-body .knob-range { width: calc(var(--knob-size, 60px) + 24px); }
+/* A speaker sits as a knob does, and grows as one does. */
+.face-body .widget-speaker { gap: 4px; }
+.face-body .speaker-well { padding: 4px; }
+.face-body .speaker-grille { width: var(--knob-size, 60px); height: var(--knob-size, 60px); cursor: pointer; }
+.face-body .widget-speaker .play { padding: 2px 8px; }
 
 /* A faux LCD, for readouts and for typing into: a recessed panel with a faint
    dot-matrix grid behind segment-colored mono text. */
@@ -714,7 +797,8 @@ input.lcd:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
    sits the same distance under its label, so a row of them lines up. */
 .face-body .widget-value.lcd, .face-body input[type="text"].lcd { height: 34px; padding: 0 9px; font-size: 16px; line-height: 32px; letter-spacing: 0.04em; }
 .face-body .widget-readout:has(> .lcd) { gap: 4px; }
-.instrument-face .lcd { font-size: 12px; padding: 3px 6px; }
+/* On the diagram, an LCD that shows and one that takes text are one size. */
+.instrument-face .widget-value.lcd, .instrument-face input[type="text"].lcd { height: 24px; padding: 0 6px; font-size: 12px; line-height: 22px; }
 .lcd-control { display: grid; gap: 4px; min-width: 0; }
 
 /* A push button: a dark cap in a bright rim, lit for a moment when pressed. */
@@ -749,9 +833,9 @@ button.push:active, button.push.pressed {
 .face-body .widget-value.error { color: var(--warn); }
 .instrument-face .segment span { padding: 3px 5px; font-size: 11px; }
 .face-grip, .face-resize { display: none; }
-.face-grid.arranging .face-grip { position: absolute; inset: 0; display: block; cursor: move; border-radius: 6px; outline: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
-.face-grid.arranging .face-resize { position: absolute; right: -5px; bottom: -5px; display: block; width: 14px; height: 14px; border-radius: 4px; background: var(--accent); cursor: nwse-resize; }
-.face-empty { grid-column: 1 / -1; max-width: 34rem; margin: 24px auto; text-align: center; color: var(--muted); }
+.face-panels.arranging .face-grip { position: absolute; inset: 0; display: block; cursor: grab; touch-action: none; border-radius: 4px; outline: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.face-panels.arranging .face-resize { position: absolute; right: -5px; bottom: -5px; display: block; width: 14px; height: 14px; border-radius: 4px; background: var(--accent); cursor: nwse-resize; touch-action: none; }
+.face-empty { max-width: 34rem; margin: 24px auto; text-align: center; color: var(--muted); }
 .face-empty p { margin: 0 0 8px; }
 .reading-add .icon { padding: 0 6px; font-size: 13px; }
 
@@ -773,8 +857,5 @@ button.push:active, button.push.pressed {
   .workspace.panel-right .face { border-left: 0; border-top: 1px solid var(--rule); }
   .sash { display: none; }
   .area-blocks, .area-inspector { border: 0; border-top: 1px solid var(--rule); }
-  .palette { display: flex; flex-wrap: wrap; gap: 4px 14px; }
-  .palette-group + .palette-group { margin-top: 0; }
-  .palette-item { display: inline-block; width: auto; margin-right: 4px; }
   .face { overflow: auto; }
 }

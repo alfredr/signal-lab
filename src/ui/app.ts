@@ -96,6 +96,7 @@ import { Live } from './live.ts';
 import { showMenu, type MenuItem } from './menu.ts';
 import { paletteEntries, renderPalette, TEMPLATE } from './palette.ts';
 import { addOnce } from './parameters.ts';
+import { themeButton } from './theme.ts';
 import { inputOf, problemAt, Widgets } from './widgets.ts';
 
 const STORAGE_KEY = 'signal-lab:document';
@@ -231,6 +232,7 @@ export class App {
         this.#addReadout(path, block, reading),
       press: (id) => this.#client.press(id),
     });
+    document.querySelector('.topbar')?.append(themeButton());
     const layout = new Layout(
       byId('workspace'),
       byId('center'),

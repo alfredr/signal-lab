@@ -31,6 +31,7 @@ import {
   reachingIn,
   type Reach,
 } from '../model/instruments.ts';
+import { templates } from '../model/library.ts';
 import {
   isTerminal,
   typeOf,
@@ -38,8 +39,11 @@ import {
   type Outside,
 } from '../model/subsystems.ts';
 import { svg } from './dom.ts';
+import { hasIcon } from './drawings.ts';
 import {
+  drawingOf,
   layoutOf,
+  SYMBOL,
   roundedPath,
   route,
   snap,
@@ -47,6 +51,7 @@ import {
   type Point,
   type PortPlace,
 } from './geometry.ts';
+import { blockIcon } from './icons.ts';
 import { rateLabel } from './labels.ts';
 import type { Widgets } from './widgets.ts';
 
@@ -109,6 +114,10 @@ export type EditorEvents = {
 
 /** Two presses on a block closer together than this are a double-click. */
 const DOUBLE_CLICK_MS = 450;
+/** The size of the drawing over a block's name, in diagram units. */
+const ICON = 13;
+/** The size of the drawing that is a symbol's whole face. */
+const SYMBOL_ICON = 36;
 
 /** Data type the palette puts on drag-and-drop transfers. */
 export const BLOCK_DRAG_TYPE = 'application/x-signal-lab-block';
@@ -773,7 +782,7 @@ export class DiagramEditor {
 
     const layout = layoutOf(type);
     const { width: w, height: h } = layout;
-    const shape = type.shape ?? { kind: 'box' };
+    const shape = drawingOf(type);
     const subsystem = isSubsystem(block);
     // A block that reports readings shows what they say at the playhead where
     // others show their settings.
@@ -801,6 +810,68 @@ export class DiagramEditor {
     });
 
     switch (shape.kind) {
+      case 'symbol': {
+        // The block's drawing in a square in the middle, leads out to its
+        // ports, its name above and its settings below.
+        const left = (w - SYMBOL) / 2;
+        const top = (h - SYMBOL) / 2;
+        const icon = blockIcon(block.kind);
+        for (const [name, value] of Object.entries({
+          x: (w - SYMBOL_ICON) / 2,
+          y: (h - SYMBOL_ICON) / 2,
+          width: SYMBOL_ICON,
+          height: SYMBOL_ICON,
+        })) {
+          icon.setAttribute(name, String(value));
+        }
+
+        const leads = [
+          ...layout.inputs.flatMap((p) =>
+            p?.side === 'left'
+              ? [`M${p.x} ${p.y}H${left}`]
+              : p?.side === 'top'
+                ? [`M${p.x} ${p.y}V${top}`]
+                : p?.side === 'bottom'
+                  ? [`M${p.x} ${p.y}V${top + SYMBOL}`]
+                  : [],
+          ),
+          ...layout.outputs.flatMap((p) =>
+            p ? [`M${left + SYMBOL} ${p.y}H${p.x}`] : [],
+          ),
+        ];
+        group.append(
+          ...(leads.length
+            ? [svg('path', { class: 'symbol-lead', d: leads.join('') })]
+            : []),
+          svg('rect', {
+            class: 'body',
+            x: left,
+            y: top,
+            width: SYMBOL,
+            height: SYMBOL,
+            rx: 10,
+          }),
+          icon,
+          svg(
+            'text',
+            { class: 'label', x: w / 2, y: top - 10 },
+            block.name || type.label,
+          ),
+        );
+
+        if (summary) {
+          group.append(
+            svg(
+              'text',
+              { class: 'summary', x: w / 2, y: top + SYMBOL + 14 },
+              summary,
+            ),
+          );
+        }
+
+        break;
+      }
+
       case 'circle': {
         group.append(
           svg('circle', { class: 'body', cx: w / 2, cy: h / 2, r: w / 2 - 1 }),
@@ -937,11 +1008,35 @@ export class DiagramEditor {
           visiblePorts(type.inputs).length > 1 ||
           visiblePorts(type.outputs).length > 1;
         const inside = summary && !below;
+        // The palette's drawing of the block, over its name, with the name
+        // and summary moved down to make room.
+        // A subsystem from the library, still under its name, has its drawing.
+        const library = templates.find((t) => t.label === block.name);
+        const key = subsystem
+          ? `template:${library?.key ?? 'subsystem'}`
+          : block.kind;
+        const icon = hasIcon(key) ? blockIcon(key) : undefined;
+        if (icon) {
+          for (const [name, value] of Object.entries({
+            x: w / 2 - ICON / 2,
+            y: inside ? h / 2 - 23 : h / 2 - 16,
+            width: ICON,
+            height: ICON,
+          })) {
+            icon.setAttribute(name, String(value));
+          }
+        }
+
         group.append(
           svg('rect', { class: 'body', width: w, height: h, rx: 8 }),
+          ...(icon ? [icon] : []),
           svg(
             'text',
-            { class: 'title', x: w / 2, y: inside ? h / 2 - 8 : h / 2 + 1 },
+            {
+              class: 'title',
+              x: w / 2,
+              y: inside ? h / 2 - (icon ? 1 : 8) : h / 2 + (icon ? 7 : 1),
+            },
             block.name || type.label,
           ),
         );
@@ -953,7 +1048,7 @@ export class DiagramEditor {
               {
                 class: 'summary',
                 x: w / 2,
-                y: below ? h + 14 : h / 2 + 11,
+                y: below ? h + 14 : h / 2 + (icon ? 16 : 11),
               },
               summary,
             ),

@@ -36,7 +36,6 @@ import {
   updateDiagramAt,
   updateParameter,
   type Diagram,
-  type FaceSpot,
   type LabBlock,
   type LabDocument,
   type Parameter,
@@ -629,67 +628,6 @@ export function defaultSize(
     default:
       return { w: 6, h: 2 };
   }
-}
-
-/**
- * Where every widget goes: its saved spot, or the first free space scanning
- * row by row across `columns`.
- */
-export function layoutFace(
-  items: readonly FaceItem[],
-  spots: Readonly<Record<string, FaceSpot>> | undefined,
-  columns: number,
-  sizeOf: (item: FaceItem) => { readonly w: number; readonly h: number },
-): Map<string, FaceSpot> {
-  const layout = new Map<string, FaceSpot>();
-  const taken = new Set<string>();
-  const occupy = (spot: FaceSpot) => {
-    for (let y = spot.y; y < spot.y + spot.h; y++) {
-      for (let x = spot.x; x < spot.x + spot.w; x++) {
-        taken.add(`${x},${y}`);
-      }
-    }
-  };
-
-  const free = (spot: FaceSpot) => {
-    for (let y = spot.y; y < spot.y + spot.h; y++) {
-      for (let x = spot.x; x < spot.x + spot.w; x++) {
-        if (taken.has(`${x},${y}`)) {
-          return false;
-        }
-      }
-    }
-
-    return true;
-  };
-
-  for (const item of items) {
-    const spot = spots?.[item.id];
-    if (spot) {
-      layout.set(item.id, spot);
-      occupy(spot);
-    }
-  }
-
-  for (const item of items) {
-    if (layout.has(item.id)) {
-      continue;
-    }
-
-    const { w, h } = sizeOf(item);
-    for (let y = 0; !layout.has(item.id); y++) {
-      for (let x = 0; x <= Math.max(0, columns - w); x++) {
-        const spot = { x, y, w, h };
-        if (free(spot)) {
-          layout.set(item.id, spot);
-          occupy(spot);
-          break;
-        }
-      }
-    }
-  }
-
-  return layout;
 }
 
 /** A Plot block in the diagram already showing the output `from`, if any. */

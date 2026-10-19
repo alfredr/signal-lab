@@ -17,6 +17,7 @@ import { si } from '../engine/format.ts';
 import { html } from './dom.ts';
 import type { Trace } from './live.ts';
 import { Held } from './signal-panel.ts';
+import { onThemeChange } from './theme.ts';
 
 /** A signal drawn as a row, and how far it runs behind the mapper's tone. */
 type Lagged = {
@@ -159,6 +160,7 @@ export class SymbolView {
       this.#empty,
     );
     new ResizeObserver(() => this.#schedule()).observe(this.#canvas);
+    onThemeChange(this.element, () => this.#schedule());
   }
 
   update(state: SymbolViewState): void {

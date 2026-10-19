@@ -19,7 +19,6 @@ import {
   faceItems,
   instrumentLeads,
   faceCards,
-  layoutFace,
   reachingIn,
   readables,
   settables,
@@ -127,27 +126,6 @@ describe('instruments', () => {
     assert.deepEqual(of('carrierKnob').sort(), ['carrier', 'tuned']);
     assert.deepEqual(of('rcKnob'), ['detector']);
     assert.deepEqual(of('cnKnob'), ['receiver']);
-  });
-
-  test('fill the face without overlapping', () => {
-    const doc = am();
-    const items = faceItems(doc);
-    const layout = layoutFace(items, undefined, 12, () => ({ w: 5, h: 3 }));
-    const cells = new Set<string>();
-    for (const spot of layout.values()) {
-      assert.ok(spot.x + spot.w <= 12);
-
-      for (let y = spot.y; y < spot.y + spot.h; y++) {
-        for (let x = spot.x; x < spot.x + spot.w; x++) {
-          assert.ok(!cells.has(`${x},${y}`), `${x},${y} is taken twice`);
-          cells.add(`${x},${y}`);
-        }
-      }
-    }
-
-    // Saved spots stay where they are.
-    const saved = layoutFace(items, doc.face, 20, () => ({ w: 5, h: 3 }));
-    assert.deepEqual(saved.get('onAir'), doc.face!.onAir);
   });
 
   test('come from probes in documents saved before them', () => {

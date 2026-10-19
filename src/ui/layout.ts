@@ -23,7 +23,7 @@ type State = {
 };
 
 const DEFAULTS: State = {
-  blocks: { open: true, width: 168 },
+  blocks: { open: true, width: 208 },
   inspector: { open: true, width: 300 },
   panel: { open: true, size: 380, position: 'bottom', maximized: false },
 };

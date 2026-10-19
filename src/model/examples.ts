@@ -17,7 +17,6 @@ import {
 import {
   FORMAT,
   type Diagram,
-  type FaceSpot,
   type LabDocument,
   type Parameter,
 } from './document.ts';
@@ -31,11 +30,16 @@ type DocumentSpec = {
   readonly parts: Readonly<Record<string, Part>>;
   readonly links: readonly Link[];
   readonly parameters?: readonly Parameter[];
-  /** Where instruments go on the face, by id, as [x, y, w, h] in cells. */
-  readonly face?: Readonly<
-    Record<string, readonly [number, number, number, number]>
-  >;
+  /** How the face is organized: panels of panes of instruments. */
+  readonly panels?: readonly PanelSpec[];
 };
+
+/** An instrument by id, or with a size in cells as [id, w, h]. */
+type ItemSpec = string | readonly [string, number, number];
+/** A pane's title and instruments. */
+type PaneSpec = readonly [string, readonly ItemSpec[]];
+/** A panel's title and panes. */
+type PanelSpec = readonly [string, readonly PaneSpec[]];
 
 function document({
   title,
@@ -43,20 +47,29 @@ function document({
   parts,
   links,
   parameters = [],
-  face,
+  panels,
 }: DocumentSpec): LabDocument {
+  let panes = 0;
   return {
     format: FORMAT,
     title,
     notes,
     ...diagram(parts, links, undefined, parameters),
-    ...(face
+    ...(panels
       ? {
-          face: Object.fromEntries(
-            Object.entries(face).map(
-              ([id, [x, y, w, h]]): [string, FaceSpot] => [id, { x, y, w, h }],
-            ),
-          ),
+          panels: panels.map(([panelTitle, list], k) => ({
+            id: `panel${k + 1}`,
+            title: panelTitle,
+            panes: list.map(([paneTitle, items]) => ({
+              id: `pane${++panes}`,
+              title: paneTitle,
+              items: items.map((item) =>
+                typeof item === 'string'
+                  ? { id: item }
+                  : { id: item[0], w: item[1], h: item[2] },
+              ),
+            })),
+          })),
         }
       : {}),
   };
@@ -358,16 +371,19 @@ The **parameters** above drive it. ${code('carrier')} tunes the transmitter and 
       ...(transmitter.parameters ?? []),
       { name: 'cn', value: 27, min: -20, max: 60, unit: 'dB' },
     ],
-    face: {
-      onAir: [0, 0, 8, 5],
-      audioOut: [8, 0, 8, 5],
-      speaker: [16, 0, 3, 3],
-      carrierKnob: [0, 5, 3, 3],
-      muKnob: [3, 5, 3, 3],
-      cnKnob: [6, 5, 3, 3],
-      rcKnob: [9, 5, 3, 3],
-      voiceScope: [12, 5, 7, 4],
-    },
+    panels: [
+      [
+        'Transmitter',
+        [['Modulator', [['voiceScope', 7, 4], 'carrierKnob', 'muKnob']]],
+      ],
+      [
+        'Receiver',
+        [
+          ['Antenna', ['onAir', 'cnKnob']],
+          ['Detector', ['rcKnob', 'audioOut', 'speaker']],
+        ],
+      ],
+    ],
   });
 };
 
@@ -433,16 +449,22 @@ The voice is a **formant synthesizer**, the way talking computers worked around 
       ...(transmitter.parameters ?? []),
       { name: 'cn', value: 27, min: -20, max: 60, unit: 'dB' },
     ],
-    face: {
-      says: [0, 0, 10, 2],
-      talk: [10, 0, 3, 2],
-      saying: [13, 0, 6, 2],
-      audioOut: [0, 2, 8, 5],
-      onAir: [8, 2, 8, 5],
-      speaker: [16, 2, 3, 3],
-      muKnob: [16, 5, 3, 3],
-      cnKnob: [16, 8, 3, 3],
-    },
+    panels: [
+      [
+        'Transmitter',
+        [
+          ['Speech', [['says', 10, 2], 'talk', ['saying', 6, 2]]],
+          ['Modulator', ['muKnob']],
+        ],
+      ],
+      [
+        'Receiver',
+        [
+          ['On the air', ['onAir', 'cnKnob']],
+          ['Audio', ['audioOut', 'speaker']],
+        ],
+      ],
+    ],
   });
 };
 
@@ -503,15 +525,22 @@ The receiver's tuned circuit follows the ${code('tune')} parameter, which decide
     parameters: [
       { name: 'tune', value: 90e3, min: 60e3, max: 140e3, unit: 'Hz' },
     ],
-    face: {
-      onAir: [0, 0, 8, 5],
-      tunedScope: [8, 0, 8, 5],
-      speaker: [16, 0, 3, 3],
-      tuneKnob: [0, 5, 3, 3],
-      carrierB: [3, 5, 3, 3],
-      muB: [6, 5, 3, 3],
-      audioOut: [9, 5, 7, 4],
-    },
+    panels: [
+      [
+        'On the air',
+        [
+          ['Air', ['onAir']],
+          ['Station B', ['carrierB', 'muB']],
+        ],
+      ],
+      [
+        'Receiver',
+        [
+          ['Tuning', ['tuneKnob', 'tunedScope']],
+          ['Audio', [['audioOut', 7, 4], 'speaker']],
+        ],
+      ],
+    ],
   });
 };
 
@@ -575,14 +604,16 @@ and the low-pass keeps only the first term, so the voice comes out scaled by $\c
       { name: 'phase', value: 0, min: -180, max: 180, unit: 'deg' },
       { name: 'detune', value: 0, min: -20, max: 20, unit: 'Hz' },
     ],
-    face: {
-      voiceScope: [0, 0, 8, 5],
-      audioOut: [8, 0, 8, 5],
-      speaker: [16, 0, 3, 3],
-      phaseKnob: [0, 5, 3, 3],
-      detuneKnob: [3, 5, 3, 3],
-      modScope: [6, 5, 8, 4],
-    },
+    panels: [
+      [
+        'DSB-SC',
+        [
+          ['Transmitter', ['voiceScope', ['modScope', 8, 4]]],
+          ['Product detector', ['phaseKnob', 'detuneKnob']],
+          ['Audio', ['audioOut', 'speaker']],
+        ],
+      ],
+    ],
   });
 };
 
@@ -624,12 +655,15 @@ keeps only the upper sideband. Switch the SSB adder's bottom input to *add* for 
       ['down', 'speaker'],
     ],
     parameters: [{ name: 'bfo', value: 0, min: -300, max: 300, unit: 'Hz' }],
-    face: {
-      sbScope: [0, 0, 8, 5],
-      audioOut: [8, 0, 8, 5],
-      speaker: [16, 0, 3, 3],
-      bfoKnob: [16, 3, 3, 3],
-    },
+    panels: [
+      [
+        'SSB',
+        [
+          ['Sidebands', ['sbScope']],
+          ['Receiver', ['bfoKnob', 'audioOut', 'speaker']],
+        ],
+      ],
+    ],
   });
 };
 
@@ -713,23 +747,40 @@ $$N = -3 - \mathrm{snr} \text{ dB in 2500 Hz}$$
       { name: 'snr', value: -10, min: -30, max: 10, unit: 'dB' },
       { name: 'bfo', value: 0, min: -300, max: 300, unit: 'Hz' },
     ],
-    face: {
-      rxWaterfall: [0, 0, 9, 5],
-      txTones: [9, 0, 7, 5],
-      speaker: [16, 0, 3, 3],
-      snrKnob: [16, 3, 3, 3],
-      message: [0, 5, 8, 2],
-      sent: [8, 5, 8, 2],
-      bfoKnob: [16, 6, 3, 3],
-      heard: [0, 7, 8, 2],
-      decoded: [8, 7, 8, 2],
-      symbol: [0, 9, 4, 2],
-      tone: [4, 9, 2, 2],
-      carries: [6, 9, 3, 2],
-      toneErrors: [9, 9, 4, 2],
-      snrEstimate: [13, 9, 4, 2],
-      howTo: [0, 11, 9, 3],
-    },
+    panels: [
+      [
+        'Transmitter',
+        [
+          [
+            'Message',
+            [
+              ['message', 8, 2],
+              ['sent', 8, 2],
+              ['symbol', 4, 2],
+              ['tone', 2, 2],
+              ['carries', 3, 2],
+            ],
+          ],
+          ['Tones', [['txTones', 7, 5]]],
+        ],
+      ],
+      [
+        'Receiver',
+        [
+          ['Radio', ['snrKnob', 'bfoKnob', ['rxWaterfall', 9, 5], 'speaker']],
+          [
+            'Decoder',
+            [
+              ['heard', 8, 2],
+              ['decoded', 8, 2],
+              ['toneErrors', 4, 2],
+              ['snrEstimate', 4, 2],
+            ],
+          ],
+          ['How to', [['howTo', 9, 3]]],
+        ],
+      ],
+    ],
   });
 };
 
@@ -841,19 +892,38 @@ Between the first four blocks the bits travel as **NRZ**: $+1$ for a 1, $-1$ for
       ['keyer', 'audio'],
       ['keyer', 'speaker'],
     ],
-    face: {
-      messageBits: [0, 0, 7, 4],
-      codedBits: [7, 0, 7, 4],
-      messageText: [14, 0, 6, 2],
-      sent: [14, 2, 6, 2],
-      bitsToTones: [0, 4, 14, 10],
-      field: [14, 4, 6, 2],
-      number: [14, 6, 6, 2],
-      crcBits: [14, 8, 6, 2],
-      audio: [14, 10, 6, 4],
-      howTo: [0, 14, 14, 2],
-      speaker: [14, 14, 3, 3],
-    },
+    panels: [
+      [
+        'Packing',
+        [
+          [
+            'Message',
+            [
+              ['messageText', 6, 2],
+              ['sent', 6, 2],
+              ['field', 6, 2],
+              ['number', 6, 2],
+              ['crcBits', 6, 2],
+            ],
+          ],
+          [
+            'Bits',
+            [
+              ['messageBits', 7, 4],
+              ['codedBits', 7, 4],
+            ],
+          ],
+        ],
+      ],
+      [
+        'Bits to tones',
+        [
+          ['Symbols', [['bitsToTones', 14, 10]]],
+          ['Audio', [['audio', 6, 4], 'speaker']],
+          ['How to', [['howTo', 14, 2]]],
+        ],
+      ],
+    ],
   });
 
 const echo = (): LabDocument =>
@@ -915,12 +985,15 @@ The **Delay** is what makes the loop computable. Inside a loop the simulator ste
         scale: 'log',
       },
     ],
-    face: {
-      output: [0, 0, 10, 5],
-      speaker: [10, 0, 3, 3],
-      delayKnob: [13, 0, 3, 3],
-      feedbackKnob: [16, 0, 3, 3],
-    },
+    panels: [
+      [
+        'Echo',
+        [
+          ['Echo', ['delayKnob', 'feedbackKnob']],
+          ['Output', [['output', 10, 5], 'speaker']],
+        ],
+      ],
+    ],
   });
 
 const sweep = (): LabDocument =>
@@ -979,12 +1052,15 @@ const sweep = (): LabDocument =>
         scale: 'log',
       },
     ],
-    face: {
-      lowpassScope: [0, 0, 8, 5],
-      bandpassScope: [8, 0, 8, 5],
-      cutoffKnob: [16, 0, 3, 3],
-      orderSwitch: [0, 5, 6, 2],
-    },
+    panels: [
+      [
+        'Filters',
+        [
+          ['Filter', ['cutoffKnob', ['orderSwitch', 6, 2]]],
+          ['Responses', ['lowpassScope', 'bandpassScope']],
+        ],
+      ],
+    ],
   });
 
 export const examples: readonly {

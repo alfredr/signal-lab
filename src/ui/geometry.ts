@@ -1,6 +1,7 @@
 // Where blocks and their ports sit on the diagram, and how wires route between them.
 
 import type { BlockType, PortSpec } from '../engine/block.ts';
+import { hasIcon } from './drawings.ts';
 
 export type Point = {
   readonly x: number;
@@ -33,6 +34,34 @@ const STUB = 16;
 
 export const snap = (value: number): number => Math.round(value / GRID) * GRID;
 
+/** How the diagram draws a block: its own shape, or a schematic symbol. */
+export type Drawing =
+  | NonNullable<BlockType['shape']>
+  | { readonly kind: 'symbol' };
+
+/** A symbol's square, drawn in the middle of a box's footprint. */
+export const SYMBOL = 56;
+
+/**
+ * How a block is drawn. A plain block with a drawing of its own, one input on
+ * its left and one output at most (an input above or below has a side of its
+ * own), is drawn as that drawing in a square, as on a schematic, its name
+ * above and its settings below. It keeps a box's footprint and ports, leads
+ * running out to them, so diagrams laid out with boxes still line up. One with
+ * more ports keeps a box, which has room for their names along its sides.
+ */
+export function drawingOf(type: BlockType): Drawing {
+  const shape = type.shape ?? { kind: 'box' };
+  const shown = (ports: readonly PortSpec[]) =>
+    ports.filter((port) => !port.hidden && (port.side ?? 'left') === 'left');
+  return shape.kind === 'box' &&
+    hasIcon(type.kind) &&
+    shown(type.inputs).length <= 1 &&
+    shown(type.outputs).length <= 1
+    ? { kind: 'symbol' }
+    : shape;
+}
+
 /** Positions for `count` ports spread around `middle`. */
 const spread = (count: number, middle: number): number[] =>
   Array.from(
@@ -52,7 +81,7 @@ export function layoutOf(type: BlockType): BlockLayout {
 }
 
 function layoutBlock(type: BlockType): BlockLayout {
-  const shape = type.shape ?? { kind: 'box' };
+  const shape = drawingOf(type);
   const sideOf = (port: PortSpec) => port.side ?? 'left';
   const visibleInputs = type.inputs.filter((port) => !port.hidden);
   const visibleOutputs = type.outputs.filter((port) => !port.hidden);

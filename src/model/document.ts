@@ -51,14 +51,27 @@ export type Diagram = {
 };
 
 /**
- * Where an instrument's widget sits on the panel face, in grid cells from the
- * top left.
+ * An instrument in a pane, by full id, with its size in grid cells if it has
+ * been given one rather than its own.
  */
-export type FaceSpot = {
-  readonly x: number;
-  readonly y: number;
-  readonly w: number;
-  readonly h: number;
+export type PaneItem = {
+  readonly id: string;
+  readonly w?: number;
+  readonly h?: number;
+};
+
+/** Instruments on the panel face that belong together, under a title. */
+type Pane = {
+  readonly id: string;
+  readonly title: string;
+  readonly items: readonly PaneItem[];
+};
+
+/** Panes that make one device on the panel face. */
+export type Panel = {
+  readonly id: string;
+  readonly title: string;
+  readonly panes: readonly Pane[];
 };
 
 export type LabDocument = Diagram & {
@@ -66,10 +79,11 @@ export type LabDocument = Diagram & {
   readonly title: string;
   readonly notes: string;
   /**
-   * Where each instrument's widget sits on the face, by the instrument's full
-   * id. Instruments without a spot are placed in the first free space.
+   * How the panel face is organized: panels of panes of instruments. Those in
+   * no pane get panes of their own, and where everything goes on screen is
+   * worked out to fit the space there is.
    */
-  readonly face?: Readonly<Record<string, FaceSpot>>;
+  readonly panels?: readonly Panel[];
 };
 
 /** Subsystem ids leading from the top-level diagram down to one inside it. */
@@ -817,28 +831,36 @@ export function moveRefs(
     }
   }
 
-  const face = before.face && {
-    ...Object.fromEntries(
-      Object.entries(before.face).flatMap(([id, spot]) => {
-        const moved = rename(id);
-        return moved === undefined ? [] : [[moved, spot]];
+  // Panes list their instruments by full id.
+  const panels = before.panels?.map((panel) => ({
+    ...panel,
+    panes: panel.panes.map((pane) => ({
+      ...pane,
+      items: pane.items.flatMap((item) => {
+        const moved = rename(item.id);
+        return moved === undefined ? [] : [{ ...item, id: moved }];
       }),
-    ),
-  };
-  return face ? { ...next, face } : next;
+    })),
+  }));
+  return panels ? { ...next, panels } : next;
 }
 
-/** Drops face spots whose instruments are gone. */
+/** Takes instruments that are gone out of their panes. */
 export function pruneRefs(doc: LabDocument): LabDocument {
-  if (!doc.face) {
-    return doc;
-  }
+  let changed = false;
+  const panels = doc.panels?.map((panel) => ({
+    ...panel,
+    panes: panel.panes.map((pane) => {
+      const items = pane.items.filter((item) => blockAt(doc, item.id));
+      if (items.length === pane.items.length) {
+        return pane;
+      }
 
-  const entries = Object.entries(doc.face);
-  const kept = entries.filter(([id]) => blockAt(doc, id));
-  return kept.length === entries.length
-    ? doc
-    : { ...doc, face: Object.fromEntries(kept) };
+      changed = true;
+      return { ...pane, items };
+    }),
+  }));
+  return changed && panels ? { ...doc, panels } : doc;
 }
 
 /**
@@ -884,14 +906,6 @@ export function renameParameterAt(
   );
 }
 
-export function setFaceSpot(
-  doc: LabDocument,
-  id: string,
-  spot: FaceSpot,
-): LabDocument {
-  return { ...doc, face: { ...doc.face, [id]: spot } };
-}
-
 /**
  * Sets the notes of the diagram at `path`: the document's own, or a
  * subsystem's.
@@ -928,27 +942,65 @@ function readRef(value: unknown): PortRef | undefined {
   return { block: value.block, port: Math.trunc(value.port) };
 }
 
-function readFace(value: unknown): Pick<LabDocument, 'face'> {
-  if (!isRecord(value)) {
-    return {};
-  }
+/** A size in grid cells, if it is one. */
+function readCells(value: unknown): number | undefined {
+  return isNumber(value) && value >= 1 && value <= 40
+    ? Math.round(value)
+    : undefined;
+}
 
-  const face: Record<string, FaceSpot> = {};
-  for (const [id, spot] of Object.entries(value)) {
-    if (
-      isRecord(spot) &&
-      [spot.x, spot.y, spot.w, spot.h].every(
-        (n) => isNumber(n) && n >= 0 && n < 1000,
-      )
-    ) {
-      const [x, y, w, h] = [spot.x, spot.y, spot.w, spot.h].map((n) =>
-        Math.round(n as number),
-      );
-      face[id] = { x: x!, y: y!, w: Math.max(1, w!), h: Math.max(1, h!) };
+/**
+ * Panels of panes of instruments. Documents saved with the face as a grid of
+ * spots have none, and their instruments are given panes as they load.
+ */
+function readPanels(value: unknown): Pick<LabDocument, 'panels'> {
+  const ids = new Set<string>();
+  // Panels and panes each need an id of their own.
+  const fresh = (id: unknown): id is string => {
+    if (!isString(id) || id === '' || ids.has(id)) {
+      return false;
     }
+
+    ids.add(id);
+    return true;
+  };
+
+  const panels: Panel[] = [];
+  for (const panel of Array.isArray(value) ? value : []) {
+    if (!isRecord(panel) || !fresh(panel.id) || !Array.isArray(panel.panes)) {
+      continue;
+    }
+
+    const panes: Pane[] = [];
+    for (const pane of panel.panes as unknown[]) {
+      if (!isRecord(pane) || !fresh(pane.id) || !Array.isArray(pane.items)) {
+        continue;
+      }
+
+      const items = (pane.items as unknown[]).flatMap((item): PaneItem[] => {
+        if (!isRecord(item) || !isString(item.id)) {
+          return [];
+        }
+
+        const w = readCells(item.w);
+        const h = readCells(item.h);
+        return [{ id: item.id, ...(w ? { w } : {}), ...(h ? { h } : {}) }];
+      });
+      panes.push({
+        id: pane.id,
+        title: isString(pane.title) ? pane.title : '',
+        items,
+      });
+    }
+
+    panels.push({
+      id: panel.id,
+      title: isString(panel.title) ? panel.title : '',
+      panes,
+    });
   }
 
-  return Object.keys(face).length ? { face } : {};
+  return panels.length ? { panels } : {};
 }
 
 /**
@@ -1135,7 +1187,7 @@ export function readDocument(value: unknown): LabDocument {
     title: isString(value.title) ? value.title : 'Untitled',
     notes: isString(value.notes) ? value.notes : '',
     ...readDiagram(value, 0),
-    ...readFace(value.face),
+    ...readPanels(value.panels),
   };
   return pruneRefs(plotsFromProbes(doc, value.probes));
 }

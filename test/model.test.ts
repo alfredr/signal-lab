@@ -384,11 +384,15 @@ describe('grouping', () => {
       simulate(grouped.doc).signals.get(`${id}/dcBlock:0`)!.data,
       baseline,
     );
-    // The plot's face spot goes inside with it, and the knob left outside
+    // The plot stays in its pane under its new id, and the knob left outside
     // still finds the capacitor.
-    assert.deepEqual(
-      grouped.doc.face?.[`${id}/audioOut`],
-      original.face?.audioOut,
+    const paneOf = (doc: LabDocument, item: string) =>
+      doc.panels
+        ?.flatMap((panel) => panel.panes)
+        .find((pane) => pane.items.some((entry) => entry.id === item))?.id;
+    assert.equal(
+      paneOf(grouped.doc, `${id}/audioOut`),
+      paneOf(original, 'audioOut'),
     );
     const knob = (doc: LabDocument) =>
       doc.blocks.find((b) => b.id === 'rcKnob')!.params.target;
@@ -400,7 +404,7 @@ describe('grouping', () => {
       baseline,
     );
     assert.equal(knob(ungrouped), 'detector.rc');
-    assert.deepEqual(ungrouped.face?.audioOut, original.face?.audioOut);
+    assert.equal(paneOf(ungrouped, 'audioOut'), paneOf(original, 'audioOut'));
   });
 });
 

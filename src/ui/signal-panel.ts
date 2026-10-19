@@ -18,6 +18,7 @@ import {
   readTheme,
   type Range,
 } from './plot.ts';
+import { onThemeChange } from './theme.ts';
 
 /** How much of the stream each view shows when a plot doesn't say. */
 const SPANS: Record<PlotView, number> = {
@@ -199,6 +200,7 @@ export class Screen {
     }
 
     new ResizeObserver(() => this.#schedule()).observe(this.#canvas);
+    onThemeChange(this.element, () => this.#schedule());
   }
 
   update(state: ScreenState): void {

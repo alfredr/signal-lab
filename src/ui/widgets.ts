@@ -593,16 +593,31 @@ export class Widgets {
         this.#toggle(context, item);
       }
     });
+    // On the face a speaker is laid out as a knob is: its name over it, the
+    // grille as big as a knob there, and its switch where a knob's range
+    // goes. The grille switches it too.
     const grille = html('div', {
       class: 'speaker-grille',
       'aria-hidden': 'true',
+      'data-live': '',
     });
-    const label = html('span', { class: 'widget-title' }, item.block.name);
+    grille.addEventListener('click', (event) => {
+      event.stopPropagation();
+
+      if (context && !power.disabled) {
+        this.#toggle(context, item);
+      }
+    });
+    const label = html(
+      'span',
+      { class: 'control-label' },
+      item.block.name || 'Speaker',
+    );
     const element = html(
       'div',
       { class: `widget-speaker on-${place}` },
-      ...(place === 'face' && item.block.name ? [label] : []),
-      grille,
+      ...(place === 'face' ? [label] : []),
+      html('div', { class: 'speaker-well' }, grille),
       power,
     );
     return {
