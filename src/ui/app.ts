@@ -91,6 +91,7 @@ import { layoutOf, snap, type Point } from './geometry.ts';
 import { History } from './history.ts';
 import { Inspector } from './inspector.ts';
 import { portLabel } from './labels.ts';
+import { Layout } from './layout.ts';
 import { Live } from './live.ts';
 import { showMenu, type MenuItem } from './menu.ts';
 import { paletteEntries, renderPalette, TEMPLATE } from './palette.ts';
@@ -230,18 +231,32 @@ export class App {
         this.#addReadout(path, block, reading),
       press: (id) => this.#client.press(id),
     });
-    this.#face = new Face(byId('face'), {
-      change,
-      reveal: (id) => this.#reveal(id),
-      addPlot,
-      listen,
-      run: () => this.#run(),
-      reset: () => this.#reset(),
-      speed: (speed) => {
-        this.#speed = speed;
-        this.#render();
+    const layout = new Layout(
+      byId('workspace'),
+      byId('center'),
+      byId('layout-toggles'),
+    );
+    this.#face = new Face(
+      byId('face'),
+      {
+        change,
+        reveal: (id) => this.#reveal(id),
+        addPlot,
+        listen,
+        run: () => this.#run(),
+        reset: () => this.#reset(),
+        speed: (speed) => {
+          this.#speed = speed;
+          this.#render();
+        },
       },
-    });
+      layout.panelActions,
+    );
+    const title = byId('face').querySelector<HTMLElement>('.face-title');
+    if (title) {
+      layout.dockHandle(title);
+    }
+
     renderPalette(byId('palette'), (key) =>
       this.#add(key, this.#editor.center()),
     );

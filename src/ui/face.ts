@@ -171,7 +171,12 @@ export class Face {
   #columns = 20;
   #model: FaceModel | undefined;
 
-  constructor(host: HTMLElement, events: FaceEvents) {
+  constructor(
+    host: HTMLElement,
+    events: FaceEvents,
+    /** Buttons for the header, after Arrange: where the panel goes. */
+    actions: readonly HTMLElement[] = [],
+  ) {
     this.#events = events;
     this.#arrange.addEventListener('click', () => {
       this.#arranging = !this.#arranging;
@@ -196,6 +201,7 @@ export class Face {
           this.#reset,
         ),
         this.#arrange,
+        ...actions,
       ),
       this.#grid,
     );
@@ -305,7 +311,7 @@ export class Face {
 
   setTransport(transport: Transport): void {
     const { time, running, speed, behind } = transport;
-    this.#run.textContent = running ? '❚❚ Pause' : '▶ Run';
+    this.#run.textContent = running ? 'Pause' : 'Run';
     this.#run.setAttribute('aria-pressed', String(running));
     this.#time.textContent = clockTime(time);
     this.#time.classList.toggle('behind', running && behind);

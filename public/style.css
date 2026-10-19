@@ -26,10 +26,35 @@
   /* FT8's Costas sync symbols, set apart from the data around them. */
   --sync: #8a5a1d;
   --sync-soft: #f2eadd;
+  /* The panel face: raised modules on a darker panel, dark dials in bright
+     rims, lights in cyan, and screens set into the modules. */
+  --panel: #d5dcd8;
+  --strip: #c8d0cc;
+  --module: #f5f7f6;
+  --module-low: #e5eae7;
+  --module-edge: #bcc6c1;
+  --module-shine: rgba(255, 255, 255, 0.95);
+  --silk: #3f4c47;
+  --knob: #1d2a30;
+  --knob-high: #3a4d56;
+  --knob-rim: #edf1f2;
+  --knob-rim-edge: #a3afb3;
+  --knob-ink: #e8f4f8;
+  --knob-track: rgba(255, 255, 255, 0.1);
+  --grille: #d0d8dc;
+  --lit: #23b4e0;
+  --lit-glow: rgba(35, 180, 224, 0.55);
+  --led-off: #aab5b0;
+  --screen: #fbfcfc;
+  --screen-edge: #b3beb9;
+  --screen-ink: #15201c;
+  --screen-muted: #5d6c66;
+  --screen-rule: #c9d4cf;
+  --screen-grid: #e7ecea;
+  --screen-trace: #1b88ad;
   --font-display: "Archivo", "Arial Narrow", system-ui, sans-serif;
   --font-body: "Source Serif 4", Georgia, "Times New Roman", serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --face-height: 44%;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -54,6 +79,30 @@
     --lcd-glow: 0 0 6px rgba(166, 232, 108, 0.55);
     --sync: #e0a95c;
     --sync-soft: #2a2317;
+    --panel: #090c0b;
+    --strip: #050706;
+    --module: #1a201e;
+    --module-low: #141917;
+    --module-edge: #27302c;
+    --module-shine: rgba(255, 255, 255, 0.05);
+    --silk: #aebdb6;
+    --knob: #171c1f;
+    --knob-high: #333c41;
+    --knob-rim: #3b4549;
+    --knob-rim-edge: #050606;
+    --knob-ink: #e8f4f8;
+    --knob-track: rgba(255, 255, 255, 0.08);
+    --grille: #2d3539;
+    --lit: #4fd1f0;
+    --lit-glow: rgba(79, 209, 240, 0.5);
+    --led-off: #2e3734;
+    --screen: #070a09;
+    --screen-edge: #000;
+    --screen-ink: #d3e2dc;
+    --screen-muted: #6d8178;
+    --screen-rule: #24302b;
+    --screen-grid: #111816;
+    --screen-trace: #4fd1f0;
   }
 }
 
@@ -78,6 +127,30 @@
   --lcd-glow: 0 0 6px rgba(166, 232, 108, 0.55);
   --sync: #e0a95c;
   --sync-soft: #2a2317;
+  --panel: #090c0b;
+  --strip: #050706;
+  --module: #1a201e;
+  --module-low: #141917;
+  --module-edge: #27302c;
+  --module-shine: rgba(255, 255, 255, 0.05);
+  --silk: #aebdb6;
+  --knob: #171c1f;
+  --knob-high: #333c41;
+  --knob-rim: #3b4549;
+  --knob-rim-edge: #050606;
+  --knob-ink: #e8f4f8;
+  --knob-track: rgba(255, 255, 255, 0.08);
+  --grille: #2d3539;
+  --lit: #4fd1f0;
+  --lit-glow: rgba(79, 209, 240, 0.5);
+  --led-off: #2e3734;
+  --screen: #070a09;
+  --screen-edge: #000;
+  --screen-ink: #d3e2dc;
+  --screen-muted: #6d8178;
+  --screen-rule: #24302b;
+  --screen-grid: #111816;
+  --screen-trace: #4fd1f0;
 }
 
 * { box-sizing: border-box; }
@@ -90,7 +163,7 @@ body {
   color: var(--ink);
   font: 400 15px/1.5 var(--font-body);
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   height: 100dvh;
   overflow: hidden;
 }
@@ -126,21 +199,84 @@ button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .toolbar select { width: 10.5rem; }
 .divider { width: 1px; height: 20px; background: var(--rule); margin: 0 4px; }
-.status { margin: 0 0 0 auto; font: 400 12px/1.3 var(--font-mono); color: var(--muted); }
+/* Buttons that show and hide the side bars and the panel, with an icon of
+   the layout: the part filled while it shows. */
+.layout-toggles { display: flex; gap: 2px; margin-left: auto; }
+.layout-toggle { display: grid; place-items: center; width: 30px; height: 26px; padding: 0; color: var(--muted); background: none; border-color: transparent; }
+.layout-toggle[aria-pressed] { background: none; border-color: transparent; color: var(--muted); }
+.layout-toggle[aria-pressed="true"] { color: var(--ink); }
+.layout-toggle:hover:not(:disabled) { color: var(--ink); border-color: var(--rule); }
+.layout-icon { width: 16px; height: 16px; }
+.layout-icon rect { fill: none; stroke: currentColor; stroke-width: 1.2; }
+.layout-toggle[aria-pressed="true"] .layout-icon .part { fill: currentColor; }
 
-/* Workspace */
+/* The status line along the bottom. */
+.statusbar { display: flex; align-items: center; min-width: 0; height: 24px; padding: 0 12px; border-top: 1px solid var(--rule); background: var(--surface); }
+.status { margin: 0; font: 400 11.5px/1 var(--font-mono); color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Workspace: a side bar either side of the middle, where the diagram sits
+   over the panel face or beside it. Each can be closed, and dragged wider or
+   narrower by the edge it shares with the middle. */
 
 .workspace {
+  --blocks-column: var(--blocks-width, 168px);
+  --inspector-column: var(--inspector-width, 300px);
+  --panel-track: var(--panel-size, 380px);
   display: grid;
-  grid-template-columns: 168px minmax(0, 1fr) 300px;
-  grid-template-rows: minmax(0, 1fr) var(--face-height);
-  grid-template-areas: "palette canvas inspector" "palette face inspector";
+  grid-template-columns: var(--blocks-column) minmax(0, 1fr) var(--inspector-column);
+  grid-template-areas: "blocks center inspector";
   min-height: 0;
 }
-.palette { grid-area: palette; overflow: auto; padding: 12px; border-right: 1px solid var(--rule); background: var(--surface); }
-.canvas { grid-area: canvas; position: relative; min-height: 0; background: var(--canvas); }
-.inspector { grid-area: inspector; overflow: auto; padding: 16px; border-left: 1px solid var(--rule); background: var(--surface); }
-.face { grid-area: face; overflow: auto; padding: 10px 12px 16px; border-top: 1px solid var(--rule); background: var(--bg); }
+.workspace.no-blocks { --blocks-column: 0px; }
+.workspace.no-inspector { --inspector-column: 0px; }
+.workspace.no-blocks .area-blocks, .workspace.no-inspector .area-inspector { display: none; }
+.area { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface); }
+.area-blocks { grid-area: blocks; border-right: 1px solid var(--rule); }
+.area-inspector { grid-area: inspector; border-left: 1px solid var(--rule); }
+.area-head { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; height: 32px; padding: 0 4px 0 12px; border-bottom: 1px solid var(--rule); }
+.area-title { margin: 0; font: 600 11px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+.area-close { padding: 0 7px; border-color: transparent; background: none; font: 400 17px/22px var(--font-mono); color: var(--muted); }
+.palette { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px 12px; }
+.inspector { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
+
+.center {
+  grid-area: center; position: relative; display: grid; min-width: 0; min-height: 0;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) var(--panel-track);
+  grid-template-areas: "canvas" "face";
+}
+.workspace.panel-right .center { grid-template-columns: minmax(0, 1fr) var(--panel-track); grid-template-rows: minmax(0, 1fr); grid-template-areas: "canvas face"; }
+.workspace.no-panel .center { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); grid-template-areas: "canvas"; }
+.workspace.panel-max .center { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); grid-template-areas: "face"; }
+.workspace.no-panel .face, .workspace.panel-max .canvas { display: none; }
+.canvas { grid-area: canvas; position: relative; min-width: 0; min-height: 0; background: var(--canvas); }
+.face { grid-area: face; min-width: 0; min-height: 0; overflow: auto; padding: 10px 12px 16px; border-top: 1px solid var(--rule); }
+.workspace.panel-right .face { border-top: 0; border-left: 1px solid var(--rule); }
+.workspace.panel-max .face { border: 0; }
+
+/* The edges to drag, which light up when the pointer finds them. */
+.sash { position: absolute; z-index: 6; touch-action: none; }
+.sash::after { content: ""; position: absolute; inset: 1px; background: var(--accent); opacity: 0; transition: opacity 0.1s; }
+.sash:hover::after { opacity: 1; transition-delay: 0.3s; }
+.sash.active::after { opacity: 1; transition-delay: 0s; }
+.sash-blocks, .sash-inspector, .workspace.panel-right .sash-panel { top: 0; bottom: 0; width: 6px; cursor: col-resize; }
+.sash-blocks { left: -3px; }
+.sash-inspector { right: -3px; }
+.sash-panel { left: 0; right: 0; bottom: calc(var(--panel-track) - 3px); height: 6px; cursor: row-resize; }
+.workspace.panel-right .sash-panel { left: auto; right: calc(var(--panel-track) - 3px); height: auto; }
+.workspace.no-blocks .sash-blocks, .workspace.no-inspector .sash-inspector, .workspace.no-panel .sash-panel, .workspace.panel-max .sash-panel { display: none; }
+
+/* Docking the panel by dragging its title: a shadow shows where it would go. */
+.dock-handle { cursor: grab; user-select: none; touch-action: none; }
+.workspace.docking, .workspace.docking * { cursor: grabbing !important; }
+.dock-preview { position: absolute; z-index: 7; pointer-events: none; background: color-mix(in srgb, var(--accent) 16%, transparent); outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 4px; transition: inset 0.12s ease; }
+.dock-preview[data-position="bottom"] { inset: 55% 0 0 0; }
+.dock-preview[data-position="right"] { inset: 0 0 0 55%; }
+@media (prefers-reduced-motion: reduce) { .dock-preview { transition: none; } }
+/* The panel's own buttons: move, maximize and close. */
+.face button.icon-button { display: grid; place-items: center; width: 26px; height: 24px; padding: 0; }
+.layout-icon.glyph path { fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.face .icon-button .layout-icon { width: 14px; height: 14px; }
 
 /* Palette */
 
@@ -431,57 +567,125 @@ math { font-size: 1.05em; }
 .instrument-face .widget-note { font-size: 12px; }
 .widget-note p { margin: 0 0 6px; }
 
+/* A knob: a dark dial in a bright rim, its value lit around the edge and
+   written in the middle, and the ends of its range under it. */
 .knob-control { display: grid; justify-items: center; align-content: center; gap: 4px; height: 100%; }
 .knob-control .control-label { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.knob { width: 64px; height: 64px; border-radius: 50%; cursor: ns-resize; touch-action: none; }
-.knob-dial { display: block; width: 100%; height: 100%; }
-.knob-track, .knob-fill { fill: none; stroke-width: 7; stroke-linecap: round; }
-.knob-track { stroke: var(--rule); }
-.knob-fill { stroke: var(--accent); }
-.knob-cap { fill: var(--surface); stroke: var(--port); stroke-width: 1.5; }
-.knob-pointer { stroke: var(--ink); stroke-width: 5; stroke-linecap: round; }
-input.knob-value { width: 100%; max-width: 116px; padding: 3px 6px; text-align: center; }
-.instrument-face .knob-control { grid-template-columns: 44px minmax(0, 1fr); justify-items: start; column-gap: 8px; row-gap: 2px; }
-.instrument-face .knob { grid-row: 1 / span 2; width: 44px; height: 44px; }
-.instrument-face .knob-control .control-label { grid-column: 2; }
-.instrument-face input.knob-value { grid-column: 2; max-width: none; text-align: left; }
+.knob-well { display: grid; place-items: center; padding: 4px; }
+.knob-well > * { grid-area: 1 / 1; }
+.knob {
+  width: 60px; height: 60px; border-radius: 50%; cursor: ns-resize; touch-action: none;
+  background: radial-gradient(circle at 50% 26%, var(--knob-high), var(--knob) 64%);
+  box-shadow: 0 0 0 3px var(--knob-rim), 0 0 0 4px var(--knob-rim-edge), 0 4px 9px 1px rgba(0, 0, 0, 0.3), inset 0 1px 1px rgba(255, 255, 255, 0.16);
+}
+.knob:focus-visible { outline-offset: 7px; }
+.knob-dial { display: block; width: 100%; height: 100%; overflow: visible; }
+.knob-track, .knob-fill { fill: none; stroke-width: 5; stroke-linecap: round; }
+.knob-track { stroke: var(--knob-track); }
+.knob-fill { stroke: var(--lit); filter: drop-shadow(0 0 2px var(--lit-glow)); }
+.knob-tip { fill: var(--knob-ink); }
+/* The value sits in the middle of the dial, and takes typing on a double-click. */
+input.knob-value {
+  width: 46px; padding: 1px 0; text-align: center; color: var(--knob-ink); background: none; border: 0; border-radius: 3px;
+  font: 600 10px/1.1 var(--font-mono); font-variant-numeric: tabular-nums; pointer-events: none;
+}
+input.knob-value.long { font-size: 9px; letter-spacing: -0.04em; }
+.knob-control.typing input.knob-value { width: 72px; pointer-events: auto; background: var(--knob); outline: 1px solid var(--lit); }
+.knob-range { display: flex; justify-content: space-between; gap: 6px; width: 84px; font: 500 9px/1 var(--font-mono); color: var(--muted); white-space: nowrap; }
+.knob-range span { overflow: hidden; text-overflow: ellipsis; }
+/* On the diagram, the value sits beside a smaller dial. */
+.instrument-face .knob-control { grid-template-columns: 40px minmax(0, 1fr); justify-items: start; column-gap: 10px; row-gap: 2px; }
+.instrument-face .knob-well { display: contents; }
+.instrument-face .knob { grid-row: 1 / span 2; grid-column: 1; width: 38px; height: 38px; margin-left: 4px; }
+.instrument-face .knob-control .control-label { grid-column: 2; grid-row: 1; }
+.instrument-face input.knob-value { grid-column: 2; grid-row: 2; width: 100%; color: var(--ink); text-align: left; font-size: 12px; pointer-events: auto; }
+.instrument-face .knob-range { display: none; }
 
-.widget-speaker { display: grid; justify-items: center; align-content: center; gap: 6px; }
-.speaker-grille { width: 56px; height: 56px; border: 2px solid var(--rule); border-radius: 50%; background: radial-gradient(circle, var(--muted) 1.2px, transparent 1.7px) 0 0 / 7px 7px, var(--bg); }
-.widget-speaker.playing .speaker-grille { border-color: var(--accent); animation: thump 0.5s ease-in-out infinite alternate; }
-@keyframes thump { to { transform: scale(1.06); } }
-.instrument-face .widget-speaker { padding: 4px; gap: 3px; }
-.instrument-face .speaker-grille { width: 30px; height: 30px; background-size: 5px 5px, auto; }
+/* A speaker: a perforated grille in a rim, and a switch with a light. */
+.widget-speaker { display: grid; justify-items: center; align-content: center; gap: 10px; }
+.speaker-grille {
+  width: 54px; height: 54px; border-radius: 50%;
+  background: radial-gradient(circle, rgba(0, 0, 0, 0.62) 1.2px, transparent 1.7px) 0 0 / 6px 6px, radial-gradient(circle at 50% 30%, var(--module), var(--grille) 70%);
+  box-shadow: 0 0 0 3px var(--knob-rim), 0 0 0 4px var(--knob-rim-edge), 0 3px 8px rgba(0, 0, 0, 0.25), inset 0 2px 5px rgba(0, 0, 0, 0.35);
+}
+.widget-speaker.playing .speaker-grille { box-shadow: 0 0 0 3px var(--knob-rim), 0 0 0 4px var(--lit), 0 0 14px var(--lit-glow), inset 0 2px 5px rgba(0, 0, 0, 0.35); animation: thump 0.5s ease-in-out infinite alternate; }
+@keyframes thump { to { transform: scale(1.05); } }
+.instrument-face .widget-speaker { padding: 4px; gap: 6px; }
+.instrument-face .speaker-grille { width: 28px; height: 28px; background-size: 5px 5px, auto; }
 .instrument-face .widget-speaker .play { padding: 1px 5px; font-size: 9px; }
 @media (prefers-reduced-motion: reduce) {
   .widget-speaker.playing .speaker-grille { animation: none; }
 }
 
-/* The panel face, with the stream's transport. */
+/* The panel face, with the stream's transport along the top. */
 
-.face-head { position: sticky; top: -10px; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: -10px -12px 10px; padding: 8px 12px; background: var(--bg); border-bottom: 1px solid var(--rule); }
-.face-title { margin: 0; font: 800 16px/1 var(--font-display); font-stretch: 112%; }
+.face { background: var(--panel); }
+.face-head { position: sticky; top: -10px; z-index: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: -10px -12px 10px; padding: 7px 12px; background: var(--strip); border-bottom: 1px solid var(--module-edge); }
+.face-title { margin: 0; font: 700 11px/1 var(--font-display); font-stretch: 112%; letter-spacing: 0.24em; text-transform: uppercase; color: var(--silk); }
 .transport { display: flex; flex: 1; align-items: center; gap: 6px; min-width: 260px; }
-.transport-time { min-width: 6.5em; font: 600 12px var(--font-mono); font-variant-numeric: tabular-nums; }
+/* The stream's clock, on a small LCD. */
+.transport-time {
+  min-width: 6.5em; padding: 3px 8px; text-align: right;
+  font: 600 12px/1.2 var(--font-mono); font-variant-numeric: tabular-nums; letter-spacing: 0.04em;
+  color: var(--lcd-ink); text-shadow: var(--lcd-glow); background: var(--lcd); border-radius: 3px;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+}
 /* Running slower than asked, because the simulation can't keep up. */
 .transport-time.behind { color: var(--warn); }
-.transport select { width: auto; padding: 3px 6px; }
 .run { min-width: 7.5em; }
+
+/* Buttons and choosers on the panel: small, raised, lettered in capitals. */
+.face button.small, .face select {
+  width: auto; padding: 4px 8px; border: 1px solid var(--module-edge); border-radius: 4px;
+  background: linear-gradient(var(--module), var(--module-low)); box-shadow: inset 0 1px 0 var(--module-shine), 0 1px 1px rgba(0, 0, 0, 0.1);
+  font: 600 10px/1.2 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--silk);
+}
+.face button.small:hover:not(:disabled), .face select:hover { color: var(--ink); border-color: var(--lit); }
+.face button.small[aria-pressed="true"] { color: var(--ink); background: linear-gradient(var(--module-low), var(--module)); border-color: var(--module-edge); }
+/* Switches with a light in them: Listen, a speaker's power, Run. */
+.face button.play, .face button.run { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.face button.play::before, .face button.run::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--led-off); box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.35); }
+.face button.play[aria-pressed="true"]::before, .face button.run[aria-pressed="true"]::before { background: var(--lit); box-shadow: 0 0 6px 1px var(--lit-glow); }
+
 .face-grid { position: relative; display: grid; grid-template-columns: repeat(auto-fill, 32px); grid-auto-columns: 32px; grid-auto-rows: 32px; gap: 8px; }
-.face-grid.arranging { background-image: radial-gradient(var(--grid-dot) 1.5px, transparent 1.5px); background-size: 40px 40px; background-position: 16px 16px; }
+.face-grid.arranging { background-image: radial-gradient(var(--module-edge) 1.5px, transparent 1.5px); background-size: 40px 40px; background-position: 16px 16px; }
 .face-item { position: relative; display: flex; min-width: 0; min-height: 0; }
-.face-body { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; padding: 8px 10px; overflow: hidden; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; }
+/* Each instrument is a module: a raised plate with a soft edge. */
+.face-body {
+  display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; padding: 6px 8px; overflow: hidden;
+  background: linear-gradient(var(--module), var(--module-low)); border: 1px solid var(--module-edge); border-radius: 6px;
+  box-shadow: inset 0 1px 0 var(--module-shine), 0 1px 3px rgba(0, 0, 0, 0.14);
+}
 .face-body > * { flex: 1; min-height: 0; }
-.face-item.selected .face-body { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.face-item.selected .face-body { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 1px 3px rgba(0, 0, 0, 0.14); }
 .face-item.scope .face-body { border-style: dashed; }
-.face-body .signal-panel { display: flex; flex-direction: column; padding: 0; background: none; border: 0; }
-.face-body .signal-head { flex-wrap: wrap; row-gap: 4px; }
-/* The name and Listen share the top line; the view buttons take the next. */
+.face-body .control-label { font: 600 10px/1.2 var(--font-mono); letter-spacing: 0.12em; color: var(--silk); }
+.face-body .widget-value { color: var(--ink); }
+.face-body .widget-note { color: var(--silk); }
+
+/* A screen module: its name and Listen along the top, over a screen set
+   into the plate, with the views and what it measures on the screen. */
+.face-body .signal-panel { display: flex; flex-direction: column; gap: 6px; padding: 0; background: none; border: 0; }
+.face-body .signal-head { gap: 8px; margin: 0; }
 .face-body .signal-name { flex: 1 1 0; }
-.face-body .signal-head .segmented-buttons { order: 1; flex: 1 0 100%; }
+.face-body .signal-title, .face-body .widget-symbols > .widget-title { font: 700 10px/1.3 var(--font-display); font-stretch: 112%; letter-spacing: 0.16em; text-transform: uppercase; color: var(--silk); }
 .face-body .swatch { display: none; }
-.face-body .knob { width: 50px; height: 50px; }
-.face-body .widget-readout { gap: 1px; }
+.signal-display, .face-body .widget-symbols .plot-wrap {
+  --surface: var(--screen); --ink: var(--screen-ink); --muted: var(--screen-muted); --rule: var(--screen-rule); --grid: var(--screen-grid); --accent: var(--screen-trace);
+  background: var(--screen); border: 1px solid var(--screen-edge); border-radius: 4px; box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.22);
+}
+.signal-display { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; }
+.signal-bar { display: flex; align-items: center; gap: 8px; padding: 4px 6px 0; }
+.signal-bar .segmented-buttons { flex: none; gap: 2px; }
+.signal-bar .segment-button {
+  margin: 0; padding: 2px 6px; border: 0; border-radius: 3px; background: none; box-shadow: none;
+  font: 600 9px/1.3 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--screen-muted);
+}
+.signal-bar .segment-button:hover:not(:disabled) { color: var(--screen-ink); }
+.signal-bar .segment-button[aria-pressed="true"] { color: var(--screen); background: var(--screen-trace); }
+.signal-meta { flex: 1; min-width: 0; text-align: right; font: 500 10px/1.3 var(--font-mono); color: var(--screen-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.face-body .widget-symbols { gap: 6px; }
+.face-body .widget-readout { gap: 4px; }
 
 /* A faux LCD, for readouts and for typing into: a recessed panel with a faint
    dot-matrix grid behind segment-colored mono text. */
@@ -513,17 +717,18 @@ input.lcd:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .instrument-face .lcd { font-size: 12px; padding: 3px 6px; }
 .lcd-control { display: grid; gap: 4px; min-width: 0; }
 
-/* A push button: round, raised, and lit for a moment when pressed. */
+/* A push button: a dark cap in a bright rim, lit for a moment when pressed. */
 .widget-button { display: grid; place-items: center; height: 100%; }
 button.push {
-  min-width: 64px; min-height: 40px; padding: 8px 16px; border-radius: 999px;
-  font: 700 12px/1.1 var(--font-display); letter-spacing: 0.04em; text-transform: uppercase;
-  color: var(--ink); background: linear-gradient(var(--surface), var(--bg));
-  border: 1px solid var(--rule); box-shadow: 0 2px 0 var(--rule), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  min-width: 64px; min-height: 40px; padding: 8px 16px; border: 0; border-radius: 8px;
+  font: 700 11px/1.1 var(--font-display); font-stretch: 112%; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--knob-ink); background: radial-gradient(circle at 50% 20%, var(--knob-high), var(--knob) 80%);
+  box-shadow: 0 0 0 3px var(--knob-rim), 0 0 0 4px var(--knob-rim-edge), 0 3px 6px rgba(0, 0, 0, 0.3);
 }
+button.push:hover:not(:disabled) { color: var(--knob-ink); }
 button.push:active, button.push.pressed {
-  transform: translateY(1px); box-shadow: 0 1px 0 var(--rule), 0 0 10px var(--accent);
-  border-color: var(--accent); color: var(--accent);
+  transform: translateY(1px); color: var(--lit);
+  box-shadow: 0 0 0 3px var(--knob-rim), 0 0 0 4px var(--lit), 0 0 14px var(--lit-glow);
 }
 .instrument-face button.push { min-width: 48px; min-height: 28px; padding: 4px 10px; font-size: 10px; }
 
@@ -534,11 +739,17 @@ button.push:active, button.push.pressed {
 .clip-status { font: 400 11px/1.3 var(--font-mono); color: var(--muted); }
 .clip-status:empty { display: none; }
 .face-body .widget-value { font-size: 20px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* A number on the face shows on a small screen set into the module, as the
+   LCDs do. */
+.face-body .widget-value:not(.lcd) {
+  height: 34px; padding: 0 9px; line-height: 32px; font-size: 17px; font-variant-numeric: tabular-nums;
+  color: var(--screen-trace); background: var(--screen); border: 1px solid var(--screen-edge); border-radius: 4px;
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.22);
+}
+.face-body .widget-value.error { color: var(--warn); }
 .instrument-face .segment span { padding: 3px 5px; font-size: 11px; }
-.face-body .knob-control { gap: 2px; }
-.face-body input.knob-value { padding: 2px 4px; }
 .face-grip, .face-resize { display: none; }
-.face-grid.arranging .face-grip { position: absolute; inset: 0; display: block; cursor: move; border-radius: 10px; outline: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.face-grid.arranging .face-grip { position: absolute; inset: 0; display: block; cursor: move; border-radius: 6px; outline: 1px dashed var(--accent); background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .face-grid.arranging .face-resize { position: absolute; right: -5px; bottom: -5px; display: block; width: 14px; height: 14px; border-radius: 4px; background: var(--accent); cursor: nwse-resize; }
 .face-empty { grid-column: 1 / -1; max-width: 34rem; margin: 24px auto; text-align: center; color: var(--muted); }
 .face-empty p { margin: 0 0 8px; }
@@ -551,15 +762,19 @@ button.push:active, button.push.pressed {
 @media (max-width: 900px) {
   body { display: block; height: auto; overflow: auto; }
   .topbar { position: sticky; top: 0; z-index: 2; }
-  .status { margin-left: 0; width: 100%; }
   .workspace {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 62vh auto auto auto;
-    grid-template-areas: "canvas" "face" "palette" "inspector";
+    grid-template-rows: auto auto auto;
+    grid-template-areas: "center" "blocks" "inspector";
   }
-  .palette { border-right: 0; border-top: 1px solid var(--rule); display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .workspace .center, .workspace.panel-right .center { grid-template-columns: minmax(0, 1fr); grid-template-rows: 62vh auto; grid-template-areas: "canvas" "face"; }
+  .workspace.no-panel .center { grid-template-rows: 62vh; grid-template-areas: "canvas"; }
+  .workspace.panel-max .center { grid-template-rows: auto; grid-template-areas: "face"; }
+  .workspace.panel-right .face { border-left: 0; border-top: 1px solid var(--rule); }
+  .sash { display: none; }
+  .area-blocks, .area-inspector { border: 0; border-top: 1px solid var(--rule); }
+  .palette { display: flex; flex-wrap: wrap; gap: 4px 14px; }
   .palette-group + .palette-group { margin-top: 0; }
   .palette-item { display: inline-block; width: auto; margin-right: 4px; }
-  .inspector { border-left: 0; border-top: 1px solid var(--rule); }
-  .face { overflow: visible; }
+  .face { overflow: auto; }
 }

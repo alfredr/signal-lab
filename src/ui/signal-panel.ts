@@ -653,6 +653,8 @@ export class SignalPanel {
       waterfall: viewButton('waterfall', 'Waterfall'),
     };
     this.#listen.addEventListener('click', () => actions.listen());
+    // A header with the name and Listen, over a screen with its views and
+    // measurements along the top.
     this.element = html(
       'section',
       { class: 'signal-panel' },
@@ -660,18 +662,31 @@ export class SignalPanel {
         'header',
         { class: 'signal-head' },
         this.#swatch,
-        html('div', { class: 'signal-name' }, this.#title, this.#meta),
-        html(
-          'div',
-          { class: 'segmented-buttons', role: 'group', 'aria-label': 'View' },
-          this.#viewButtons.time,
-          this.#viewButtons.spectrum,
-          this.#viewButtons.waterfall,
-        ),
+        html('div', { class: 'signal-name' }, this.#title),
         this.#listen,
         ...(actions.extra ?? []),
       ),
-      this.#screen.element,
+      html(
+        'div',
+        { class: 'signal-display' },
+        html(
+          'div',
+          { class: 'signal-bar' },
+          html(
+            'div',
+            {
+              class: 'segmented-buttons',
+              role: 'group',
+              'aria-label': 'View',
+            },
+            this.#viewButtons.time,
+            this.#viewButtons.spectrum,
+            this.#viewButtons.waterfall,
+          ),
+          this.#meta,
+        ),
+        this.#screen.element,
+      ),
     );
   }
 
@@ -698,7 +713,8 @@ export class SignalPanel {
     if (trace && due) {
       this.#measured = { at: now, time: state.time, trace };
       const data = latest(trace, state.time, state.settings.span);
-      this.#meta.textContent = `${si(trace.rate, 'Hz')} · power ${decibels(toDecibels(power(data), -200))} · peak ${significant(peak(data))}`;
+      this.#meta.textContent = `${si(trace.rate, 'Hz')} · ${decibels(toDecibels(power(data), -200))} · peak ${significant(peak(data))}`;
+      this.#meta.title = 'Sample rate, power and peak of what is shown';
     } else if (!trace) {
       this.#measured = { at: now, time: Number.NaN, trace };
       this.#meta.textContent = state.problem ? 'no signal' : 'waiting';

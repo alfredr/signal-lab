@@ -117,19 +117,29 @@ function current(context: WidgetContext, item: FaceItem): FaceItem {
 /** The angle of a knob's pointer, from -135 degrees at 0 to 135 at 1. */
 const angle = (fraction: number) => -135 + 270 * fraction;
 
-/** An arc on the knob's rim from `from` to `to` degrees, clockwise from up. */
-function arc(from: number, to: number, radius = 42): string {
-  const point = (degrees: number) => {
-    const radians = ((degrees - 90) * Math.PI) / 180;
-    return `${(radius * Math.cos(radians)).toFixed(2)} ${(radius * Math.sin(radians)).toFixed(2)}`;
-  };
+/** The radius of a knob's value arc, in a dial 100 across. */
+const RIM = 40;
 
+/** The point `radius` out at `degrees`, clockwise from up. */
+function polar(degrees: number, radius: number): [number, number] {
+  const radians = ((degrees - 90) * Math.PI) / 180;
+  return [radius * Math.cos(radians), radius * Math.sin(radians)];
+}
+
+/** An arc on the knob's face from `from` to `to` degrees, clockwise from up. */
+function arc(from: number, to: number, radius = RIM): string {
+  const point = (degrees: number) =>
+    polar(degrees, radius)
+      .map((n) => n.toFixed(2))
+      .join(' ');
   return `M${point(from)} A${radius} ${radius} 0 ${to - from > 180 ? 1 : 0} 1 ${point(to)}`;
 }
 
 /**
- * A rotary knob: drag up or down (with Shift for fine steps), scroll, or use
- * the arrow keys; type a value in the field below it.
+ * A rotary knob: a dark dial with its value lit around the rim and written in
+ * the middle, and the ends of its range under it. Drag up or down (with Shift
+ * for fine steps), scroll, or use the arrow keys; double-click it, or press
+ * Enter, to type a value.
  */
 function knob(
   spec: NumberParam,
@@ -137,13 +147,7 @@ function knob(
   onChange: (value: number, mode: ChangeMode) => void,
 ): Control {
   const fill = svg('path', { class: 'knob-fill' });
-  const pointer = svg('line', {
-    class: 'knob-pointer',
-    x1: 0,
-    y1: -14,
-    x2: 0,
-    y2: -30,
-  });
+  const tip = svg('circle', { class: 'knob-tip', r: 4.5 });
   const dial = html(
     'div',
     {
@@ -162,8 +166,7 @@ function knob(
       },
       svg('path', { class: 'knob-track', d: arc(-135, 135) }),
       fill,
-      svg('circle', { class: 'knob-cap', r: 33 }),
-      pointer,
+      tip,
     ),
   );
   const text = html('input', {
@@ -172,14 +175,20 @@ function knob(
     inputmode: 'decimal',
     spellcheck: 'false',
     autocomplete: 'off',
+    tabindex: -1,
     'aria-label': `${spec.label} value`,
   });
   const element = html(
     'div',
     { class: 'knob-control' },
     html('span', { class: 'control-label', title: spec.label }, spec.label),
-    dial,
-    text,
+    html('div', { class: 'knob-well' }, dial, text),
+    html(
+      'div',
+      { class: 'knob-range', 'aria-hidden': 'true' },
+      html('span', {}, formatParam(spec.min, spec)),
+      html('span', {}, formatParam(spec.max, spec)),
+    ),
   );
 
   let shown = value;
@@ -196,13 +205,24 @@ function knob(
     shown = v;
     const t = toFraction(spec, v);
     fill.setAttribute('d', t > 0.002 ? arc(-135, angle(t)) : '');
-    pointer.setAttribute('transform', `rotate(${angle(t)})`);
+    const [x, y] = polar(angle(t), RIM);
+    tip.setAttribute('cx', x.toFixed(2));
+    tip.setAttribute('cy', y.toFixed(2));
     dial.setAttribute('aria-valuenow', String(v));
     dial.setAttribute('aria-valuetext', formatParam(v, spec));
 
     if (document.activeElement !== text) {
       text.value = formatParam(v, spec);
+      // A long value takes a smaller size to fit inside the dial.
+      text.classList.toggle('long', text.value.length > 6);
     }
+  };
+
+  // Typing a value: the field in the middle of the dial takes the keys.
+  const type = () => {
+    element.classList.add('typing');
+    text.focus();
+    text.select();
   };
 
   const turn = (fraction: number, mode: ChangeMode) => {
@@ -239,6 +259,7 @@ function knob(
 
   dial.addEventListener('pointerup', release);
   dial.addEventListener('pointercancel', release);
+  dial.addEventListener('dblclick', type);
 
   let settle: ReturnType<typeof setTimeout> | undefined;
   dial.addEventListener(
@@ -268,6 +289,9 @@ function knob(
     } else if (event.key === 'Home' || event.key === 'End') {
       event.preventDefault();
       turn(event.key === 'Home' ? 0 : 1, 'commit');
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      type();
     }
   });
 
@@ -283,11 +307,15 @@ function knob(
     onChange(v, 'commit');
   });
   text.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') {
+    if (event.key === 'Enter' || event.key === 'Escape') {
       text.blur();
+      dial.focus();
     }
   });
-  text.addEventListener('blur', () => (text.value = formatParam(shown, spec)));
+  text.addEventListener('blur', () => {
+    element.classList.remove('typing');
+    show(shown);
+  });
   return { element, update: (v) => show(v as number) };
 }
 
